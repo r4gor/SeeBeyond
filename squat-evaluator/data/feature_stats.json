@@ -1,0 +1,218 @@
+{
+  "feature_names": [
+    "min_knee_angle_avg",
+    "knee_angle_at_bottom",
+    "hip_minus_knee_y_at_bottom",
+    "trunk_angle_at_bottom",
+    "trunk_angle_max",
+    "knee_to_ankle_horiz_at_bottom",
+    "knee_to_hip_width_ratio_at_bottom",
+    "ankle_y_drift_max",
+    "lr_knee_angle_delta_at_bottom",
+    "descent_to_ascent_ratio"
+  ],
+  "classes": [
+    "forward_lean",
+    "good",
+    "shallow"
+  ],
+  "n_train": 65,
+  "per_class": {
+    "forward_lean": {
+      "n": 20,
+      "mean": {
+        "min_knee_angle_avg": 137.8340606689453,
+        "knee_angle_at_bottom": 145.3175048828125,
+        "hip_minus_knee_y_at_bottom": -27.735937118530273,
+        "trunk_angle_at_bottom": 49.548431396484375,
+        "trunk_angle_max": 53.64434051513672,
+        "knee_to_ankle_horiz_at_bottom": 3.919221878051758,
+        "knee_to_hip_width_ratio_at_bottom": 1.2883259057998657,
+        "ankle_y_drift_max": 1.7227290868759155,
+        "lr_knee_angle_delta_at_bottom": 32.62386703491211,
+        "descent_to_ascent_ratio": 1.2841064929962158
+      },
+      "std": {
+        "min_knee_angle_avg": 4.791615009307861,
+        "knee_angle_at_bottom": 8.37820053100586,
+        "hip_minus_knee_y_at_bottom": 2.004892110824585,
+        "trunk_angle_at_bottom": 3.353868246078491,
+        "trunk_angle_max": 3.285186529159546,
+        "knee_to_ankle_horiz_at_bottom": 2.3265886306762695,
+        "knee_to_hip_width_ratio_at_bottom": 0.1097898855805397,
+        "ankle_y_drift_max": 0.6129108667373657,
+        "lr_knee_angle_delta_at_bottom": 11.099475860595703,
+        "descent_to_ascent_ratio": 0.19543807208538055
+      },
+      "p10": {
+        "min_knee_angle_avg": 132.52566528320312,
+        "knee_angle_at_bottom": 135.3514404296875,
+        "hip_minus_knee_y_at_bottom": -30.196863174438477,
+        "trunk_angle_at_bottom": 45.11455154418945,
+        "trunk_angle_max": 48.896453857421875,
+        "knee_to_ankle_horiz_at_bottom": 1.7766553163528442,
+        "knee_to_hip_width_ratio_at_bottom": 1.1492407321929932,
+        "ankle_y_drift_max": 0.963121771812439,
+        "lr_knee_angle_delta_at_bottom": 20.11971664428711,
+        "descent_to_ascent_ratio": 1.071103811264038
+      },
+      "p50": {
+        "min_knee_angle_avg": 138.269287109375,
+        "knee_angle_at_bottom": 146.03335571289062,
+        "hip_minus_knee_y_at_bottom": -28.252090454101562,
+        "trunk_angle_at_bottom": 49.390777587890625,
+        "trunk_angle_max": 54.415931701660156,
+        "knee_to_ankle_horiz_at_bottom": 2.8919272422790527,
+        "knee_to_hip_width_ratio_at_bottom": 1.2957967519760132,
+        "ankle_y_drift_max": 1.7003250122070312,
+        "lr_knee_angle_delta_at_bottom": 31.58404541015625,
+        "descent_to_ascent_ratio": 1.2380952835083008
+      },
+      "p90": {
+        "min_knee_angle_avg": 142.6968994140625,
+        "knee_angle_at_bottom": 155.9577178955078,
+        "hip_minus_knee_y_at_bottom": -25.054706573486328,
+        "trunk_angle_at_bottom": 53.34305191040039,
+        "trunk_angle_max": 57.74643325805664,
+        "knee_to_ankle_horiz_at_bottom": 6.406608581542969,
+        "knee_to_hip_width_ratio_at_bottom": 1.4271132946014404,
+        "ankle_y_drift_max": 2.548081874847412,
+        "lr_knee_angle_delta_at_bottom": 45.42887878417969,
+        "descent_to_ascent_ratio": 1.5187394618988037
+      }
+    },
+    "good": {
+      "n": 25,
+      "mean": {
+        "min_knee_angle_avg": 71.58373260498047,
+        "knee_angle_at_bottom": 76.11991882324219,
+        "hip_minus_knee_y_at_bottom": 1.5500550270080566,
+        "trunk_angle_at_bottom": 28.880165100097656,
+        "trunk_angle_max": 32.875614166259766,
+        "knee_to_ankle_horiz_at_bottom": 11.709863662719727,
+        "knee_to_hip_width_ratio_at_bottom": 1.1475956439971924,
+        "ankle_y_drift_max": 2.5299789905548096,
+        "lr_knee_angle_delta_at_bottom": 13.710719108581543,
+        "descent_to_ascent_ratio": 1.5146321058273315
+      },
+      "std": {
+        "min_knee_angle_avg": 3.280709743499756,
+        "knee_angle_at_bottom": 5.095803737640381,
+        "hip_minus_knee_y_at_bottom": 2.9873969554901123,
+        "trunk_angle_at_bottom": 2.508326530456543,
+        "trunk_angle_max": 1.5494500398635864,
+        "knee_to_ankle_horiz_at_bottom": 1.9790211915969849,
+        "knee_to_hip_width_ratio_at_bottom": 0.2867090106010437,
+        "ankle_y_drift_max": 0.7655143141746521,
+        "lr_knee_angle_delta_at_bottom": 8.214712142944336,
+        "descent_to_ascent_ratio": 0.16692425310611725
+      },
+      "p10": {
+        "min_knee_angle_avg": 67.28862762451172,
+        "knee_angle_at_bottom": 70.83494567871094,
+        "hip_minus_knee_y_at_bottom": -3.181633710861206,
+        "trunk_angle_at_bottom": 25.16715431213379,
+        "trunk_angle_max": 30.978818893432617,
+        "knee_to_ankle_horiz_at_bottom": 9.431023597717285,
+        "knee_to_hip_width_ratio_at_bottom": 0.9524070024490356,
+        "ankle_y_drift_max": 1.3674834966659546,
+        "lr_knee_angle_delta_at_bottom": 2.1059601306915283,
+        "descent_to_ascent_ratio": 1.3541501760482788
+      },
+      "p50": {
+        "min_knee_angle_avg": 71.56837463378906,
+        "knee_angle_at_bottom": 75.22673034667969,
+        "hip_minus_knee_y_at_bottom": 2.44537353515625,
+        "trunk_angle_at_bottom": 28.938997268676758,
+        "trunk_angle_max": 32.796104431152344,
+        "knee_to_ankle_horiz_at_bottom": 11.922840118408203,
+        "knee_to_hip_width_ratio_at_bottom": 1.0904186964035034,
+        "ankle_y_drift_max": 2.6651840209960938,
+        "lr_knee_angle_delta_at_bottom": 13.891960144042969,
+        "descent_to_ascent_ratio": 1.465116262435913
+      },
+      "p90": {
+        "min_knee_angle_avg": 75.85629272460938,
+        "knee_angle_at_bottom": 82.12451934814453,
+        "hip_minus_knee_y_at_bottom": 4.7070207595825195,
+        "trunk_angle_at_bottom": 31.99663734436035,
+        "trunk_angle_max": 35.322975158691406,
+        "knee_to_ankle_horiz_at_bottom": 14.375617980957031,
+        "knee_to_hip_width_ratio_at_bottom": 1.276084303855896,
+        "ankle_y_drift_max": 3.514456272125244,
+        "lr_knee_angle_delta_at_bottom": 22.254039764404297,
+        "descent_to_ascent_ratio": 1.7586666345596313
+      }
+    },
+    "shallow": {
+      "n": 20,
+      "mean": {
+        "min_knee_angle_avg": 103.0804443359375,
+        "knee_angle_at_bottom": 110.0336685180664,
+        "hip_minus_knee_y_at_bottom": -19.866622924804688,
+        "trunk_angle_at_bottom": 24.475107192993164,
+        "trunk_angle_max": 26.50870704650879,
+        "knee_to_ankle_horiz_at_bottom": 13.328625679016113,
+        "knee_to_hip_width_ratio_at_bottom": 1.5004510879516602,
+        "ankle_y_drift_max": 1.7538211345672607,
+        "lr_knee_angle_delta_at_bottom": 39.599449157714844,
+        "descent_to_ascent_ratio": 1.4193198680877686
+      },
+      "std": {
+        "min_knee_angle_avg": 9.65725326538086,
+        "knee_angle_at_bottom": 10.678913116455078,
+        "hip_minus_knee_y_at_bottom": 2.5168049335479736,
+        "trunk_angle_at_bottom": 2.0874249935150146,
+        "trunk_angle_max": 1.6475625038146973,
+        "knee_to_ankle_horiz_at_bottom": 4.0251898765563965,
+        "knee_to_hip_width_ratio_at_bottom": 0.17666664719581604,
+        "ankle_y_drift_max": 0.6062491536140442,
+        "lr_knee_angle_delta_at_bottom": 10.106725692749023,
+        "descent_to_ascent_ratio": 0.7038288712501526
+      },
+      "p10": {
+        "min_knee_angle_avg": 92.07740020751953,
+        "knee_angle_at_bottom": 98.0687026977539,
+        "hip_minus_knee_y_at_bottom": -22.16878890991211,
+        "trunk_angle_at_bottom": 22.339067459106445,
+        "trunk_angle_max": 25.106277465820312,
+        "knee_to_ankle_horiz_at_bottom": 8.57595157623291,
+        "knee_to_hip_width_ratio_at_bottom": 1.2177270650863647,
+        "ankle_y_drift_max": 1.0969772338867188,
+        "lr_knee_angle_delta_at_bottom": 30.37875747680664,
+        "descent_to_ascent_ratio": 0.9916666746139526
+      },
+      "p50": {
+        "min_knee_angle_avg": 102.19869995117188,
+        "knee_angle_at_bottom": 107.76222229003906,
+        "hip_minus_knee_y_at_bottom": -20.09136962890625,
+        "trunk_angle_at_bottom": 24.43764877319336,
+        "trunk_angle_max": 26.230648040771484,
+        "knee_to_ankle_horiz_at_bottom": 14.140640258789062,
+        "knee_to_hip_width_ratio_at_bottom": 1.521092176437378,
+        "ankle_y_drift_max": 1.7695579528808594,
+        "lr_knee_angle_delta_at_bottom": 39.19964599609375,
+        "descent_to_ascent_ratio": 1.2684524059295654
+      },
+      "p90": {
+        "min_knee_angle_avg": 116.7186508178711,
+        "knee_angle_at_bottom": 122.41199493408203,
+        "hip_minus_knee_y_at_bottom": -17.226713180541992,
+        "trunk_angle_at_bottom": 27.251773834228516,
+        "trunk_angle_max": 28.242021560668945,
+        "knee_to_ankle_horiz_at_bottom": 18.771495819091797,
+        "knee_to_hip_width_ratio_at_bottom": 1.6984587907791138,
+        "ankle_y_drift_max": 2.3886024951934814,
+        "lr_knee_angle_delta_at_bottom": 48.46274185180664,
+        "descent_to_ascent_ratio": 1.6355769634246826
+      }
+    }
+  },
+  "good_baseline_thresholds": {
+    "hip_minus_knee_y_warning_cm": -6.169030666351318,
+    "trunk_angle_warning_deg": 34.504963874816895,
+    "knee_to_hip_ratio_low_warning": 0.8090524971485138,
+    "ankle_drift_warning_cm": 4.279970586299896,
+    "lr_knee_delta_warning_deg": 30.468751907348633
+  }
+}
