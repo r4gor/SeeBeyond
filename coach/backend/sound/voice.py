@@ -16,9 +16,10 @@ import os
 import io
 import wave
 import hashlib
+import threading
 from pathlib import Path
+import numpy as np
 import paho.mqtt.client as mqtt
-import paho.mqtt.publish as mqttpublish
 from dotenv import load_dotenv
 from mistralai.client import Mistral
 from elevenlabs.client import ElevenLabs
@@ -53,13 +54,57 @@ _mistral    = Mistral(api_key=MISTRAL_API_KEY)
 _elevenlabs = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
 # ---------------------------------------------------------------------------
+# Persistent MQTT client — avoids a TCP handshake on every publish
+# ---------------------------------------------------------------------------
+
+_mqtt_lock: threading.Lock = threading.Lock()
+_mqtt_client_instance: mqtt.Client | None = None
+
+
+def _get_client() -> mqtt.Client:
+    """Return the shared MQTT client, connecting or reconnecting as needed."""
+    global _mqtt_client_instance
+    with _mqtt_lock:
+        client = _mqtt_client_instance
+        if client is not None and client.is_connected():
+            return client
+        broker, port = _mqtt_settings()
+        if client is not None:
+            try:
+                client.reconnect()
+                return client
+            except Exception:
+                try:
+                    client.loop_stop()
+                except Exception:
+                    pass
+                _mqtt_client_instance = None
+        new_client = mqtt.Client()
+        try:
+            new_client.connect(broker, port, keepalive=60)
+        except TimeoutError as exc:
+            raise ConnectionError(
+                f"Timed out connecting to MQTT broker {broker}:{port}. "
+                "Check that your broker is running and reachable, or set MQTT_BROKER "
+                "and MQTT_PORT to the broker address used by the Core2."
+            ) from exc
+        except OSError as exc:
+            raise ConnectionError(
+                f"Could not connect to MQTT broker {broker}:{port}: {exc}. "
+                "Check MQTT_BROKER, MQTT_PORT, WiFi, and broker availability."
+            ) from exc
+        new_client.loop_start()
+        _mqtt_client_instance = new_client
+        return new_client
+
+# ---------------------------------------------------------------------------
 # LLM
 # ---------------------------------------------------------------------------
 
 def llm_assistant_response(input: str) -> str:
     """Translate a technical classification string into a plain coaching instruction."""
     response = _mistral.chat.complete(
-        model="ministral-8b-latest",
+        model="ministral-3b-latest",
         max_tokens=128,
         messages=[{
             "role": "user",
@@ -159,26 +204,7 @@ def _mqtt_settings() -> tuple[str, int]:
 
 def send_request(topic: str, payload: bytes | str, retain: bool = False) -> None:
     """Publish a single MQTT message to the Core2."""
-    broker, port = _mqtt_settings()
-    try:
-        mqttpublish.single(
-            topic,
-            payload=payload,
-            hostname=broker,
-            port=port,
-            retain=retain,
-        )
-    except TimeoutError as exc:
-        raise ConnectionError(
-            f"Timed out connecting to MQTT broker {broker}:{port}. "
-            "Check that your broker is running and reachable, or set MQTT_BROKER "
-            "and MQTT_PORT to the broker address used by the Core2."
-        ) from exc
-    except OSError as exc:
-        raise ConnectionError(
-            f"Could not connect to MQTT broker {broker}:{port}: {exc}. "
-            "Check MQTT_BROKER, MQTT_PORT, WiFi, and broker availability."
-        ) from exc
+    _get_client().publish(topic, payload=payload, qos=0, retain=retain)
 
 
 def play_sound(wav_bytes: bytes) -> None:
@@ -235,30 +261,9 @@ def _split_wav_for_mqtt(wav_bytes: bytes) -> list[bytes]:
 
 
 def _send_audio_chunks(chunks: list[bytes]) -> None:
-    broker, port = _mqtt_settings()
-    client = mqtt.Client()
-
-    try:
-        client.connect(broker, port)
-        client.loop_start()
-
-        for chunk in chunks:
-            result = client.publish(TOPIC_WAV_DATA, payload=chunk, qos=0, retain=False)
-            result.wait_for_publish()
-    except TimeoutError as exc:
-        raise ConnectionError(
-            f"Timed out connecting to MQTT broker {broker}:{port}. "
-            "Check that your broker is running and reachable, or set MQTT_BROKER "
-            "and MQTT_PORT to the broker address used by the Core2."
-        ) from exc
-    except OSError as exc:
-        raise ConnectionError(
-            f"Could not connect to MQTT broker {broker}:{port}: {exc}. "
-            "Check MQTT_BROKER, MQTT_PORT, WiFi, and broker availability."
-        ) from exc
-    finally:
-        client.loop_stop()
-        client.disconnect()
+    client = _get_client()
+    for chunk in chunks:
+        client.publish(TOPIC_WAV_DATA, payload=chunk, qos=0, retain=False)
 
 
 def _extract_pcm_44100_mono_16bit(wav_bytes: bytes) -> bytes:
@@ -271,33 +276,12 @@ def _extract_pcm_44100_mono_16bit(wav_bytes: bytes) -> bytes:
 
 
 def _send_pcm_clip(pcm: bytes) -> None:
-    broker, port = _mqtt_settings()
-    client = mqtt.Client()
-    max_chunk_size = MQTT_MAX_WAV_PAYLOAD
-
-    try:
-        client.connect(broker, port)
-        client.loop_start()
-
-        client.publish(TOPIC_PCM_START, payload=str(len(pcm)).encode(), qos=0, retain=False).wait_for_publish()
-        for offset in range(0, len(pcm), max_chunk_size):
-            chunk = pcm[offset:offset + max_chunk_size]
-            client.publish(TOPIC_PCM_DATA, payload=chunk, qos=0, retain=False).wait_for_publish()
-        client.publish(TOPIC_PCM_END, payload=b"", qos=0, retain=False).wait_for_publish()
-    except TimeoutError as exc:
-        raise ConnectionError(
-            f"Timed out connecting to MQTT broker {broker}:{port}. "
-            "Check that your broker is running and reachable, or set MQTT_BROKER "
-            "and MQTT_PORT to the broker address used by the Core2."
-        ) from exc
-    except OSError as exc:
-        raise ConnectionError(
-            f"Could not connect to MQTT broker {broker}:{port}: {exc}. "
-            "Check MQTT_BROKER, MQTT_PORT, WiFi, and broker availability."
-        ) from exc
-    finally:
-        client.loop_stop()
-        client.disconnect()
+    client = _get_client()
+    max_chunk = MQTT_MAX_WAV_PAYLOAD
+    client.publish(TOPIC_PCM_START, str(len(pcm)).encode(), qos=0)
+    for offset in range(0, len(pcm), max_chunk):
+        client.publish(TOPIC_PCM_DATA, pcm[offset:offset + max_chunk], qos=0)
+    client.publish(TOPIC_PCM_END, b"", qos=0).wait_for_publish()
 
 # ---------------------------------------------------------------------------
 # Main pipeline
@@ -419,9 +403,22 @@ def convert_to(
         channels = input_channels
         pcm = bytes(audio)
 
-    samples = _pcm_to_mono_16bit(pcm, sample_width, channels)
-    samples = _resample_linear(samples, source_rate, target_sample_rate)
-    converted_pcm = _encode_16bit(samples)
+    if sample_width == 2:
+        raw = np.frombuffer(pcm, dtype=np.int16)
+        if channels > 1:
+            raw = raw.reshape(-1, channels).mean(axis=1).round().astype(np.int16)
+        if source_rate != target_sample_rate:
+            n_out = max(1, round(len(raw) * target_sample_rate / source_rate))
+            raw = np.interp(
+                np.linspace(0, len(raw) - 1, n_out),
+                np.arange(len(raw)),
+                raw.astype(np.float64),
+            ).round().clip(-32768, 32767).astype(np.int16)
+        converted_pcm = raw.tobytes()
+    else:
+        samples = _pcm_to_mono_16bit(pcm, sample_width, channels)
+        samples = _resample_linear(samples, source_rate, target_sample_rate)
+        converted_pcm = _encode_16bit(samples)
 
     wav_buffer = io.BytesIO()
     with wave.open(wav_buffer, "wb") as wav:
