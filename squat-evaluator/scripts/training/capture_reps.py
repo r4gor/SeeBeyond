@@ -59,7 +59,7 @@ def draw_skeleton(canvas, kp2d):
 #   `with Pipeline() as pipe:` works
 #   pipe.read() -> (rgb_bgr: np.uint8 HxWx3, kp3d: np.float32 (17,3))
 #   kp3d coordinates in cm. NaN entries mark invalid joints.
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from src.pipeline import open_oak_skeleton_stream
 

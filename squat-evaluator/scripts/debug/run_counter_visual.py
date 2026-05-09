@@ -13,7 +13,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.pipeline import open_oak_skeleton_stream, COCO_SKELETON_EDGES
 from src.rep_counter import (

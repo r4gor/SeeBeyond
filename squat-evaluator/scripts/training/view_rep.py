@@ -30,7 +30,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "data"
 MANIFEST_PATH = DATA_DIR / "manifest.csv"
 MANIFEST_HEADER = ["rep_id", "label", "n_frames", "fps", "mp4", "npy", "timestamp"]
