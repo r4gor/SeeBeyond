@@ -103,33 +103,18 @@ def _load_voice(broker: str, port: int) -> None:
     _voice = _v
 
 
-# One audio slot: prevents overlapping TTS clips when reps come fast.
-_audio_lock = threading.Lock()
-
-
 def _speak_async(verdict: str, feedback: str, knee_angle: float) -> None:
     """
-    Fire-and-forget: feedback → ElevenLabs TTS → WAV → MQTT PCM stream → Core2.
-    Skips the LLM round-trip; classifier output is already coaching language.
+    Fire-and-forget: sends coaching text to Core2 via MQTT.
+    Core2 calls ElevenLabs directly and plays the result.
     """
     def _worker() -> None:
-        with _audio_lock:
-            try:
-                t0 = time.monotonic()
-                cue = _voice.coaching_cue(feedback)
-                print(f"[sound] cue: {cue!r}  (knee {knee_angle:.0f}deg)")
-                t1 = time.monotonic()
-                wav = _voice.transcribe_message(cue)
-                t2 = time.monotonic()
-                _voice.play_sound(wav)
-                t3 = time.monotonic()
-                print(
-                    f"[sound] tts={1000*(t2-t1):.0f}ms  "
-                    f"play={1000*(t3-t2):.0f}ms  "
-                    f"total={1000*(t3-t0):.0f}ms"
-                )
-            except Exception as exc:
-                print(f"[sound] ERROR: {exc}")
+        try:
+            cue = _voice.coaching_cue(feedback)
+            print(f"[sound] cue: {cue!r}  (knee {knee_angle:.0f}deg)")
+            _voice.send_tts_text(cue)
+        except Exception as exc:
+            print(f"[sound] ERROR: {exc}")
 
     threading.Thread(target=_worker, daemon=True).start()
 

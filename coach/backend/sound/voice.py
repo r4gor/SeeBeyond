@@ -62,6 +62,7 @@ PCM_VOLUME = float(os.environ.get("PCM_VOLUME", "1.0"))
 TTS_CACHE_DIR = Path(os.environ.get("TTS_CACHE_DIR", Path(__file__).resolve().parents[1] / ".cache" / "tts"))
 
 # Topics must match core2/config.h
+TOPIC_TTS_SPEAK   = "core2/tts/speak"
 TOPIC_WAV_DATA    = "core2/play/data"
 TOPIC_WAV_FILE    = "core2/play/file"
 TOPIC_PCM_START   = "core2/play/pcm/start"
@@ -324,6 +325,11 @@ def send_request(topic: str, payload: bytes | str, retain: bool = False) -> None
 def play_sound(wav_bytes: bytes) -> None:
     """Send one buffered PCM clip to Core2 for gapless playback."""
     _send_pcm_clip(_extract_pcm_44100_mono_16bit(wav_bytes))
+
+
+def send_tts_text(text: str) -> None:
+    """Send coaching text to Core2; the device calls ElevenLabs and plays the result."""
+    send_request(TOPIC_TTS_SPEAK, text.encode("utf-8"))
 
 
 def play_file(filename: str) -> None:

@@ -8,37 +8,81 @@ static const size_t WAV_HEADER_SIZE = 44;
 static const size_t MEM_THRESHOLD   = 50 * 1024;
 
 // ---------------------------------------------------------------------------
-// Background audio task — keeps MQTT loop unblocked during playback
+// Streaming audio task
+//
+// Each pcm/data MQTT chunk is enqueued immediately and played as it arrives,
+// so playback starts after the first chunk instead of waiting for all of them.
+// All audio (PCM stream + SD rep sounds) goes through this single task so
+// M5.Spk.PlaySound is never called concurrently from two contexts.
 // ---------------------------------------------------------------------------
 
-struct AudioClip { uint8_t* data; size_t size; };
-static QueueHandle_t _audioQueue = nullptr;
+// Chunks to buffer before playback starts. Each MQTT chunk is typically a few
+// KB; 3 chunks gives ~100-150ms of runway so the network can stay ahead of the
+// speaker without adding noticeable latency.
+static const int MIN_PREBUFFER = 3;
+
+struct AudioChunk { uint8_t* data; size_t size; };
+static QueueHandle_t    _audioQueue = nullptr;
+static volatile bool    _buffering  = false;
+static volatile int     _chunkCount = 0;
 
 static void audioTask(void*) {
-    AudioClip clip;
+    AudioChunk chunk;
     for (;;) {
-        if (xQueueReceive(_audioQueue, &clip, portMAX_DELAY) == pdTRUE) {
-            Serial.printf("[Audio] playing %u bytes\n", clip.size);
-            M5.Spk.PlaySound((const unsigned char*)clip.data, clip.size);
-            free(clip.data);
+        // Hold here while pre-buffering so the queue can fill before playback.
+        while (_buffering) vTaskDelay(pdMS_TO_TICKS(10));
+        if (xQueueReceive(_audioQueue, &chunk, pdMS_TO_TICKS(100)) == pdTRUE) {
+            M5.Spk.PlaySound((const unsigned char*)chunk.data, chunk.size);
+            free(chunk.data);
         }
     }
 }
 
 void initAudioTask() {
-    _audioQueue = xQueueCreate(1, sizeof(AudioClip));
+    _audioQueue = xQueueCreate(8, sizeof(AudioChunk));
     xTaskCreate(audioTask, "audio", 8192, nullptr, 2, nullptr);
 }
 
-bool schedulePCMPlay(uint8_t* data, size_t dataSize) {
-    if (!data || dataSize == 0 || !_audioQueue) { free(data); return false; }
-    AudioClip clip = {data, dataSize};
-    if (xQueueSend(_audioQueue, &clip, 0) != pdTRUE) {
-        free(data);  // queue full — stale cue, discard
-        Serial.println("[Audio] queue full, clip dropped");
+// Enqueue raw PCM. Takes ownership of `data` (will free it after playback).
+bool queueAudioChunk(uint8_t* data, size_t size) {
+    if (!data || size == 0 || !_audioQueue) { free(data); return false; }
+    AudioChunk chunk = {data, size};
+    if (xQueueSend(_audioQueue, &chunk, pdMS_TO_TICKS(500)) != pdTRUE) {
+        free(data);
+        Serial.println("[Audio] queue full, chunk dropped");
         return false;
     }
+    if (_buffering && ++_chunkCount >= MIN_PREBUFFER) {
+        _buffering = false;
+        Serial.println("[Audio] pre-buffer full, starting playback");
+    }
     return true;
+}
+
+// Begin a new PCM stream: flush stale audio and enable pre-buffering.
+void startAudioStream() {
+    if (!_audioQueue) return;
+    AudioChunk chunk;
+    while (xQueueReceive(_audioQueue, &chunk, 0) == pdTRUE) {
+        if (chunk.data) free(chunk.data);
+    }
+    _chunkCount = 0;
+    _buffering  = true;
+}
+
+// End a PCM stream: release any remaining buffered chunks for playback even if
+// MIN_PREBUFFER was not reached (short audio cue case).
+void endAudioStream() {
+    _buffering = false;
+}
+
+// Discard all pending chunks. Called on pcm/start to flush any stale audio.
+void flushAudioQueue() {
+    if (!_audioQueue) return;
+    AudioChunk chunk;
+    while (xQueueReceive(_audioQueue, &chunk, 0) == pdTRUE) {
+        if (chunk.data) free(chunk.data);
+    }
 }
 
 extern void drawStatus(const char* msg);
@@ -134,6 +178,44 @@ static const uint8_t* findPCMData(const uint8_t* data, size_t dataSize, size_t& 
     Serial.println("[WAV] data chunk not found");
     drawStatus("WAV no data");
     return nullptr;
+}
+
+// Extract PCM from an in-memory WAV buffer, enqueue for playback.
+bool queueWAVBuffer(const uint8_t* data, size_t size) {
+    size_t pcmLen = 0;
+    const uint8_t* pcm = findPCMData(data, size, pcmLen);
+    if (!pcm) return false;
+    uint8_t* copy = (uint8_t*)malloc(pcmLen);
+    if (!copy) { Serial.println("[Audio] malloc failed for WAV buffer"); return false; }
+    memcpy(copy, pcm, pcmLen);
+    return queueAudioChunk(copy, pcmLen);
+}
+
+// Load a WAV from SD, extract PCM, enqueue for playback.
+bool queueWAVFromSD(const char* filename) {
+    if (!SD.exists(filename)) {
+        Serial.printf("[Audio] SD file missing: %s\n", filename);
+        return false;
+    }
+    File f = SD.open(filename, FILE_READ);
+    if (!f) { Serial.printf("[Audio] cannot open: %s\n", filename); return false; }
+
+    size_t fileSize = f.size();
+    uint8_t* buf = (uint8_t*)malloc(fileSize);
+    if (!buf) { f.close(); Serial.println("[Audio] malloc failed for SD WAV"); return false; }
+    f.read(buf, fileSize);
+    f.close();
+
+    size_t pcmLen = 0;
+    const uint8_t* pcm = findPCMData(buf, fileSize, pcmLen);
+    if (!pcm) { free(buf); return false; }
+
+    uint8_t* pcmCopy = (uint8_t*)malloc(pcmLen);
+    if (!pcmCopy) { free(buf); Serial.println("[Audio] malloc failed for PCM"); return false; }
+    memcpy(pcmCopy, pcm, pcmLen);
+    free(buf);
+
+    return queueAudioChunk(pcmCopy, pcmLen);
 }
 
 bool playWAVFromSD(const char* filename, uint32_t repeat, int channel, bool stop_current) {

@@ -5,6 +5,7 @@
 #include "config.h"
 #include "wav_player.h"
 #include "mqtt_handler.h"
+#include "tts_client.h"
 
 // ---------------------------------------------------------------------------
 // Display
@@ -84,6 +85,7 @@ void setup() {
 
     mqttSetup(wifiClient);
     initAudioTask();
+    initTTSTask();
 
     drawReps();
     Serial.println("[Core2] Ready");
