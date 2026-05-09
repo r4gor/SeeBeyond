@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import queue
 import sys
 import threading
 import time
@@ -215,6 +216,9 @@ def _draw_hud(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    from dotenv import load_dotenv
+    load_dotenv(_REPO / "coach" / "backend" / ".env")
+
     ap = argparse.ArgumentParser(description="SeeBeyond squat evaluator")
     ap.add_argument("--broker",      default=os.environ.get("MQTT_BROKER", "192.168.1.100"),
                     help="MQTT broker IP (default: env MQTT_BROKER or 192.168.1.100)")
@@ -237,37 +241,51 @@ def main() -> None:
         except Exception as exc:
             print(f"[run] WARNING: sound disabled — {exc}")
 
-    # ---------- shared HUD state (written in rep callback, read in draw loop) ----------
+    # ---------- shared HUD state (written in coach thread, read in draw loop) ----------
     _last: dict = {"verdict": "", "feedback": "", "t": 0.0}
 
-    # ---------- rep callback ----------
-    def _on_rep(rep: RepData) -> None:
-        features         = extract_features(rep.trajectory, rep.bottom_frame_idx)
-        verdict, fb_msg  = classify_and_explain(features)
-        n                = rep.rep_number
-        min_angle        = rep.min_knee_angle
+    # ---------- coach worker thread ----------
+    _rep_queue: queue.Queue = queue.Queue()
 
-        print(
-            f"\n[REP {n:>3}]  verdict={verdict:<14s}  "
-            f"angle={min_angle:5.1f}\u00b0  \u2192  {fb_msg}"
-        )
-
-        # Update HUD
-        _last["verdict"]  = verdict
-        _last["feedback"] = fb_msg
-        _last["t"]        = time.monotonic()
-
-        # MQTT: instant beep + rep-count update on Core2
-        if _voice is not None:
+    def _coach_worker() -> None:
+        while True:
+            rep = _rep_queue.get()
+            if rep is None:
+                break
             try:
-                _voice.trigger_rep(good=(verdict == "good"))
-                _voice.display(n)
-            except Exception as exc:
-                print(f"[run] MQTT error: {exc}")
+                features        = extract_features(rep.trajectory, rep.bottom_frame_idx)
+                verdict, fb_msg = classify_and_explain(features)
+                n               = rep.rep_number
+                min_angle       = rep.min_knee_angle
 
-        # ElevenLabs TTS → MQTT audio (non-blocking)
-        if _voice is not None:
-            _speak_async(verdict, fb_msg, min_angle)
+                print(
+                    f"\n[REP {n:>3}]  verdict={verdict:<14s}  "
+                    f"angle={min_angle:5.1f}\u00b0  \u2192  {fb_msg}"
+                )
+
+                _last["verdict"]  = verdict
+                _last["feedback"] = fb_msg
+                _last["t"]        = time.monotonic()
+
+                if _voice is not None:
+                    try:
+                        _voice.trigger_rep(good=(verdict == "good"))
+                        _voice.display(n)
+                    except Exception as exc:
+                        print(f"[run] MQTT error: {exc}")
+
+                if _voice is not None:
+                    _speak_async(verdict, fb_msg, min_angle)
+            except Exception as exc:
+                print(f"[coach] ERROR: {exc}")
+            finally:
+                _rep_queue.task_done()
+
+    _coach_thread = threading.Thread(target=_coach_worker, daemon=True)
+    _coach_thread.start()
+
+    def _on_rep(rep: RepData) -> None:
+        _rep_queue.put(rep)
 
     # ---------- set up ----------
     counter = RepCounter(on_rep_complete=_on_rep)
