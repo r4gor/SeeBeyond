@@ -47,15 +47,18 @@ static void ttsTask(void*) {
         HTTPClient http;
         http.begin(sec,
             "https://api.elevenlabs.io/v1/text-to-speech/" ELEVENLABS_VOICE_ID
-            "?output_format=pcm_44100");
+            "?output_format=mp3_22050_32");
         http.addHeader("Content-Type", "application/json");
         http.addHeader("xi-api-key", ELEVENLABS_API_KEY);
         http.setTimeout(12000);
 
         int code = http.POST((uint8_t*)body, strlen(body));
         if (code != 200) {
-            Serial.printf("[TTS] HTTP %d\n", code);
-            drawStatus("TTS error");
+            String resp = http.getString();
+            Serial.printf("[TTS] HTTP %d: %s\n", code, resp.c_str());
+            char errMsg[32];
+            snprintf(errMsg, sizeof(errMsg), "TTS err %d", code);
+            drawStatus(errMsg);
             http.end();
             continue;
         }
