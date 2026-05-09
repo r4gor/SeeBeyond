@@ -15,13 +15,16 @@ Core2 MQTT topics:
 import os
 import io
 import wave
+import hashlib
+from pathlib import Path
+import paho.mqtt.client as mqtt
 import paho.mqtt.publish as mqttpublish
 from dotenv import load_dotenv
 from mistralai.client import Mistral
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -33,10 +36,16 @@ ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMa
 
 MQTT_BROKER = os.environ.get("MQTT_BROKER", "192.168.1.100")
 MQTT_PORT   = int(os.environ.get("MQTT_PORT", 1883))
+MQTT_MAX_WAV_PAYLOAD = int(os.environ.get("MQTT_MAX_WAV_PAYLOAD", 60 * 1024))
+WAV_HEADER_SIZE = 44
+TTS_CACHE_DIR = Path(os.environ.get("TTS_CACHE_DIR", Path(__file__).resolve().parents[1] / ".cache" / "tts"))
 
 # Topics must match core2/config.h
 TOPIC_WAV_DATA    = "core2/play/data"
 TOPIC_WAV_FILE    = "core2/play/file"
+TOPIC_PCM_START   = "core2/play/pcm/start"
+TOPIC_PCM_DATA    = "core2/play/pcm/data"
+TOPIC_PCM_END     = "core2/play/pcm/end"
 TOPIC_TRIGGER_REP = "core2/rep"
 TOPIC_SCORE       = "core2/score"
 
@@ -71,6 +80,10 @@ def llm_assistant_response(input: str) -> str:
 
 def transcribe_message(text: str) -> bytes:
     """Generate WAV audio from text using ElevenLabs. Returns raw WAV bytes."""
+    cached = _read_tts_cache(text)
+    if cached is not None:
+        return cached
+
     audio_iter = _elevenlabs.text_to_speech.convert(
         voice_id=ELEVENLABS_VOICE_ID,
         text=text,
@@ -83,7 +96,41 @@ def transcribe_message(text: str) -> bytes:
         ),
         output_format="pcm_22050",  # Core2 speaker works well at 22050 Hz 16-bit PCM
     )
-    return convert_to(b"".join(audio_iter), input_sample_rate=22050)
+    wav_bytes = convert_to(b"".join(audio_iter), input_sample_rate=22050)
+    _write_tts_cache(text, wav_bytes)
+    return wav_bytes
+
+
+def _tts_cache_path(text: str) -> Path:
+    cache_input = "\n".join([
+        "elevenlabs",
+        ELEVENLABS_VOICE_ID,
+        "eleven_multilingual_v2",
+        "pcm_22050",
+        "44100hz-16bit-mono-wav",
+        "stability=0.4",
+        "similarity_boost=0.8",
+        "style=0.0",
+        "use_speaker_boost=True",
+        text,
+    ])
+    key = hashlib.sha256(cache_input.encode("utf-8")).hexdigest()
+    return TTS_CACHE_DIR / f"{key}.wav"
+
+
+def _read_tts_cache(text: str) -> bytes | None:
+    path = _tts_cache_path(text)
+    if not path.exists():
+        return None
+    return path.read_bytes()
+
+
+def _write_tts_cache(text: str, wav_bytes: bytes) -> None:
+    TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _tts_cache_path(text)
+    temp_path = path.with_suffix(".tmp")
+    temp_path.write_bytes(wav_bytes)
+    temp_path.replace(path)
 
 # ---------------------------------------------------------------------------
 # MQTT / Core2 interface
@@ -95,21 +142,48 @@ def push_feedback(reps=None, verdict=None, feedback=None, waiting=False, knee_an
     c = Coach("/dev/ttyUSB0")  # adjust per OS
     c.push(reps=1, verdict="good", feedback="nice depth", knee_angle=88)
     c.push(reps=2, verdict="shallow", feedback="3 cm above parallel", knee_angle=108)
-    
+
+
+def _mqtt_settings() -> tuple[str, int]:
+    broker = os.environ.get("MQTT_BROKER", MQTT_BROKER)
+    port = int(os.environ.get("MQTT_PORT", MQTT_PORT))
+
+    if ":" in broker and broker.count(":") == 1:
+        broker_host, broker_port = broker.rsplit(":", 1)
+        if broker_port.isdigit():
+            broker = broker_host
+            port = int(broker_port)
+
+    return broker, port
+
+
 def send_request(topic: str, payload: bytes | str, retain: bool = False) -> None:
     """Publish a single MQTT message to the Core2."""
-    mqttpublish.single(
-        topic,
-        payload=payload,
-        hostname=MQTT_BROKER,
-        port=MQTT_PORT,
-        retain=retain,
-    )
+    broker, port = _mqtt_settings()
+    try:
+        mqttpublish.single(
+            topic,
+            payload=payload,
+            hostname=broker,
+            port=port,
+            retain=retain,
+        )
+    except TimeoutError as exc:
+        raise ConnectionError(
+            f"Timed out connecting to MQTT broker {broker}:{port}. "
+            "Check that your broker is running and reachable, or set MQTT_BROKER "
+            "and MQTT_PORT to the broker address used by the Core2."
+        ) from exc
+    except OSError as exc:
+        raise ConnectionError(
+            f"Could not connect to MQTT broker {broker}:{port}: {exc}. "
+            "Check MQTT_BROKER, MQTT_PORT, WiFi, and broker availability."
+        ) from exc
 
 
 def play_sound(wav_bytes: bytes) -> None:
-    """Send raw WAV bytes to Core2 for immediate playback."""
-    send_request(TOPIC_WAV_DATA, wav_bytes)
+    """Send one buffered PCM clip to Core2 for gapless playback."""
+    _send_pcm_clip(_extract_pcm_44100_mono_16bit(wav_bytes))
 
 
 def play_file(filename: str) -> None:
@@ -124,13 +198,106 @@ def trigger_rep(good: bool = False) -> None:
 
 def display(score: int) -> None:
     """Send a score value to update the Core2 LCD display."""
-    # score \in [0,1] -> [red - black - green]
+    # score \in [0,1] -> background \in [red - black - green]
     send_request(TOPIC_SCORE, str(score).encode())
 
 
 def generate_number_display(number: int) -> None:
     """Alias for display — pushes an integer to the Core2 score screen."""
     display(number)
+
+
+def _split_wav_for_mqtt(wav_bytes: bytes) -> list[bytes]:
+    if len(wav_bytes) <= MQTT_MAX_WAV_PAYLOAD:
+        return [wav_bytes]
+
+    with wave.open(io.BytesIO(wav_bytes), "rb") as source:
+        params = source.getparams()
+        frame_width = params.sampwidth * params.nchannels
+        max_pcm_bytes = MQTT_MAX_WAV_PAYLOAD - WAV_HEADER_SIZE
+        frames_per_chunk = max(1, max_pcm_bytes // frame_width)
+
+        chunks = []
+        while True:
+            pcm = source.readframes(frames_per_chunk)
+            if not pcm:
+                break
+
+            chunk_buffer = io.BytesIO()
+            with wave.open(chunk_buffer, "wb") as chunk:
+                chunk.setnchannels(params.nchannels)
+                chunk.setsampwidth(params.sampwidth)
+                chunk.setframerate(params.framerate)
+                chunk.writeframes(pcm)
+            chunks.append(chunk_buffer.getvalue())
+
+    return chunks
+
+
+def _send_audio_chunks(chunks: list[bytes]) -> None:
+    broker, port = _mqtt_settings()
+    client = mqtt.Client()
+
+    try:
+        client.connect(broker, port)
+        client.loop_start()
+
+        for chunk in chunks:
+            result = client.publish(TOPIC_WAV_DATA, payload=chunk, qos=0, retain=False)
+            result.wait_for_publish()
+    except TimeoutError as exc:
+        raise ConnectionError(
+            f"Timed out connecting to MQTT broker {broker}:{port}. "
+            "Check that your broker is running and reachable, or set MQTT_BROKER "
+            "and MQTT_PORT to the broker address used by the Core2."
+        ) from exc
+    except OSError as exc:
+        raise ConnectionError(
+            f"Could not connect to MQTT broker {broker}:{port}: {exc}. "
+            "Check MQTT_BROKER, MQTT_PORT, WiFi, and broker availability."
+        ) from exc
+    finally:
+        client.loop_stop()
+        client.disconnect()
+
+
+def _extract_pcm_44100_mono_16bit(wav_bytes: bytes) -> bytes:
+    with wave.open(io.BytesIO(wav_bytes), "rb") as source:
+        if source.getframerate() != 44100 or source.getsampwidth() != 2 or source.getnchannels() != 1:
+            raise ValueError(
+                "Core2 audio must be 44100 Hz, 16-bit, mono WAV before PCM transport"
+            )
+        return source.readframes(source.getnframes())
+
+
+def _send_pcm_clip(pcm: bytes) -> None:
+    broker, port = _mqtt_settings()
+    client = mqtt.Client()
+    max_chunk_size = MQTT_MAX_WAV_PAYLOAD
+
+    try:
+        client.connect(broker, port)
+        client.loop_start()
+
+        client.publish(TOPIC_PCM_START, payload=str(len(pcm)).encode(), qos=0, retain=False).wait_for_publish()
+        for offset in range(0, len(pcm), max_chunk_size):
+            chunk = pcm[offset:offset + max_chunk_size]
+            client.publish(TOPIC_PCM_DATA, payload=chunk, qos=0, retain=False).wait_for_publish()
+        client.publish(TOPIC_PCM_END, payload=b"", qos=0, retain=False).wait_for_publish()
+    except TimeoutError as exc:
+        raise ConnectionError(
+            f"Timed out connecting to MQTT broker {broker}:{port}. "
+            "Check that your broker is running and reachable, or set MQTT_BROKER "
+            "and MQTT_PORT to the broker address used by the Core2."
+        ) from exc
+    except OSError as exc:
+        raise ConnectionError(
+            f"Could not connect to MQTT broker {broker}:{port}: {exc}. "
+            "Check MQTT_BROKER, MQTT_PORT, WiFi, and broker availability."
+        ) from exc
+    finally:
+        client.loop_stop()
+        client.disconnect()
 
 # ---------------------------------------------------------------------------
 # Main pipeline

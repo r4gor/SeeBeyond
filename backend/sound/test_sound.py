@@ -12,7 +12,7 @@ import sys
 import time
 import voice
 
-SAMPLE_CLASSIFICATION = "shallow, hip 50degree too wide"
+SAMPLE_CLASSIFICATION = "shallow, back 50degree on the right"
 
 SEP = "-" * 50
 

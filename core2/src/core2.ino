@@ -20,7 +20,7 @@ static void drawReps() {
     M5.Lcd.printf("%d", repCount);
 }
 
-static void drawStatus(const char* msg) {
+void drawStatus(const char* msg) {
     M5.Lcd.fillRect(0, 0, 320, 30, BLACK);
     M5.Lcd.setTextSize(2);
     M5.Lcd.setTextColor(YELLOW, BLACK);
@@ -61,15 +61,14 @@ static void wifiConnect() {
 WiFiClient wifiClient;
 
 void setup() {
-    M5.begin();
+    M5.begin(true, true, true, true, mbus_mode_t::kMBusModeOutput, true);
     Serial.begin(115200);
-
-    M5.Spk.begin();
+    M5.Axp.SetSpkEnable(true);
 
     M5.Lcd.fillScreen(BLACK);
     drawStatus("Booting...");
 
-    if (!SD.begin()) {
+    if (!SD.begin(TFCARD_CS_PIN, SPI, 40000000)) {
         Serial.println("[SD] Mount failed");
         drawStatus("SD FAILED");
     } else {

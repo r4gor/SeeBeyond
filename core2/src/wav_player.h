@@ -29,5 +29,9 @@ bool playWAVBuffer(const uint8_t* data,
                    int            channel     = -1,
                    bool           stop_current = true);
 
+bool playPCMBuffer(const uint8_t* data,
+                   size_t         dataSize,
+                   uint32_t       repeat       = 1);
+
 // Block until playback on the given channel finishes.
 void waitForPlayback(int channel = SPEAKER_CHANNEL);
