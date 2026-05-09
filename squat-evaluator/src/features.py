@@ -100,13 +100,22 @@ def _euclid3d(a, b) -> float:
     return float(np.linalg.norm(a - b))
 
 
+def _nanmean_rows(arr: np.ndarray) -> np.ndarray:
+    """nanmean along axis=1, returns NaN for all-NaN rows without RuntimeWarning."""
+    valid = ~np.all(np.isnan(arr), axis=1)
+    out = np.full(arr.shape[0], np.nan, dtype=np.float32)
+    if valid.any():
+        out[valid] = np.nanmean(arr[valid], axis=1)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # bottom-frame detection + per-frame trajectories
 # ---------------------------------------------------------------------------
 
 def find_bottom_idx(traj: np.ndarray) -> int:
     """Bottom = max mean hip y. Robust to NaN; falls back to mid-rep."""
-    hip_y = np.nanmean(traj[:, [L_HIP, R_HIP], 1], axis=1)
+    hip_y = _nanmean_rows(traj[:, [L_HIP, R_HIP], 1])
     if np.isnan(hip_y).all():
         return len(traj) // 2
     return int(np.nanargmax(hip_y))
@@ -154,7 +163,7 @@ def extract_features(traj: np.ndarray, bottom_idx: int | None = None) -> dict:
     b = max(0, min(bottom_idx, T - 1))
 
     knee_angles = _knee_angles_per_frame(traj)         # (T, 2)
-    knee_angle_avg = np.nanmean(knee_angles, axis=1)   # (T,)
+    knee_angle_avg = _nanmean_rows(knee_angles)          # (T,)
     trunk_angles = _trunk_angles_per_frame(traj)       # (T,)
 
     # 1. min_knee_angle_avg
@@ -170,7 +179,8 @@ def extract_features(traj: np.ndarray, bottom_idx: int | None = None) -> dict:
     #    NB the COCO hip marker sits above the joint center, so good reps give ~ -3 to -6
     #    on this metric; thresholds must be calibrated against the trainer's good distribution.
     hip_mid_b = _midpoint(traj[b, L_HIP], traj[b, R_HIP])
-    knee_y_b = np.nanmean([traj[b, L_KNE, 1], traj[b, R_KNE, 1]])
+    kne_y = [v for v in (traj[b, L_KNE, 1], traj[b, R_KNE, 1]) if np.isfinite(v)]
+    knee_y_b = float(np.mean(kne_y)) if kne_y else float("nan")
     if np.isnan(hip_mid_b).any() or not np.isfinite(knee_y_b):
         hip_minus_knee_y = float("nan")
     else:
@@ -206,7 +216,7 @@ def extract_features(traj: np.ndarray, bottom_idx: int | None = None) -> dict:
 
     # 8. ankle_y_drift_max — peak rise of mean ankle y above the standing baseline.
     #    +ve cm = ankle has lifted (foot left the ground / heel lifted).
-    ank_y = np.nanmean(traj[:, [L_ANK, R_ANK], 1], axis=1)
+    ank_y = _nanmean_rows(traj[:, [L_ANK, R_ANK], 1])
     valid_ank = np.isfinite(ank_y)
     if valid_ank.sum() >= 5:
         n_baseline = max(3, int(0.10 * valid_ank.sum()))

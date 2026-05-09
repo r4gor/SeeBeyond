@@ -34,7 +34,7 @@ MISTRAL_API_KEY     = os.environ["MISTRAL_API_KEY"]
 ELEVENLABS_API_KEY  = os.environ["ELEVENLABS_API_KEY"]
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
 
-MQTT_BROKER = os.environ.get("MQTT_BROKER", "192.168.1.100")
+MQTT_BROKER = os.environ.get("MQTT_BROKER", "172.20.10.2")
 MQTT_PORT   = int(os.environ.get("MQTT_PORT", 1883))
 MQTT_MAX_WAV_PAYLOAD = int(os.environ.get("MQTT_MAX_WAV_PAYLOAD", 60 * 1024))
 WAV_HEADER_SIZE = 44
