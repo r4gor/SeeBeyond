@@ -7,6 +7,7 @@
 static PubSubClient* _client = nullptr;
 
 extern void drawStatus(const char* msg);
+extern void onScoreReceived(int n);
 
 static const size_t MAX_WAV_PAYLOAD = 60 * 1024;
 static const size_t MAX_PCM_BUFFER = 512 * 1024;
@@ -73,9 +74,16 @@ static void onMessage(const char* topic, byte* payload, unsigned int length) {
         Serial.printf("[PCM] end: %u/%u bytes\n", _pcmSize, _pcmCapacity);
         if (_pcmBuffer && _pcmSize > 0) {
             drawStatus("PCM playing");
-            playPCMBuffer(_pcmBuffer, _pcmSize);
+            // Transfer buffer ownership to audio task — do NOT free here.
+            uint8_t* buf = _pcmBuffer;
+            size_t   sz  = _pcmSize;
+            _pcmBuffer   = nullptr;
+            _pcmSize     = 0;
+            _pcmCapacity = 0;
+            schedulePCMPlay(buf, sz);
+        } else {
+            resetPCMBuffer(0);
         }
-        resetPCMBuffer(0);
         return;
     }
 
@@ -100,6 +108,17 @@ static void onMessage(const char* topic, byte* payload, unsigned int length) {
         Serial.printf("[MQTT] WAV data received: %u bytes\n", length);
         drawStatus("MQTT WAV received");
         playWAVBuffer((const uint8_t*)payload, length);
+        return;
+    }
+
+    // core2/score — set rep counter to the given integer
+    if (strcmp(topic, TOPIC_SCORE) == 0) {
+        char buf[16] = {0};
+        size_t n = length < sizeof(buf) - 1 ? length : sizeof(buf) - 1;
+        memcpy(buf, payload, n);
+        int score = atoi(buf);
+        Serial.printf("[MQTT] score: %d\n", score);
+        onScoreReceived(score);
         return;
     }
 
@@ -128,6 +147,7 @@ static void reconnect() {
             _client->subscribe(TOPIC_PCM_DATA);
             _client->subscribe(TOPIC_PCM_END);
             _client->subscribe(TOPIC_TRIGGER_REP);
+            _client->subscribe(TOPIC_SCORE);
         } else {
             Serial.printf(" failed (rc=%d), retry in 3s\n", _client->state());
             drawStatus("MQTT FAILED");

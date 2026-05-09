@@ -31,6 +31,17 @@ DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "data" / "form_model.
 
 
 # Last-resort thresholds if the bundle doesn't carry any.
+STATIC_FEEDBACK_PHRASES = [
+    "Solid rep — depth and posture clean",
+    "Solid rep — chest stayed up",
+    "Solid rep — clean form",
+    "Go deeper — hip below knee",
+    "Chest up — keep trunk vertical",
+    "Drive knees out",
+    "Knees collapsed inward — push them out",
+    "Sit back into your heels",
+]
+
 DEFAULT_THRESHOLDS = {
     "hip_minus_knee_y_warning_cm":   -8.0,
     "trunk_angle_warning_deg":        45.0,
@@ -175,7 +186,7 @@ class FormClassifier:
         return {
             "shallow":       "Go deeper — hip below knee",
             "forward_lean":  "Chest up — keep trunk vertical",
-            "heels_lifting": "Sit back into your heels",
+            "heels_lifting": "",
             "knees_caving":  "Drive knees out",
         }.get(verdict, f"Form needs work: {verdict.replace('_', ' ')}")
 

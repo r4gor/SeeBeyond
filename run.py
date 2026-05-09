@@ -52,7 +52,7 @@ import cv2
 from src.pipeline      import open_oak_skeleton_stream, COCO_SKELETON_EDGES
 from src.rep_counter   import RepCounter, RepData
 from src.features      import extract_features
-from src.classifier    import classify_and_explain
+from src.classifier    import classify_and_explain, STATIC_FEEDBACK_PHRASES
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -109,21 +109,25 @@ _audio_lock = threading.Lock()
 
 def _speak_async(verdict: str, feedback: str, knee_angle: float) -> None:
     """
-    Fire-and-forget: Mistral reformats feedback → ElevenLabs TTS → WAV →
-    MQTT PCM stream → Core2 speaker.  Runs in a daemon thread so the
-    camera loop is never blocked by network latency.
+    Fire-and-forget: feedback → ElevenLabs TTS → WAV → MQTT PCM stream → Core2.
+    Skips the LLM round-trip; classifier output is already coaching language.
     """
     def _worker() -> None:
         with _audio_lock:
             try:
-                prompt      = (
-                    f"verdict={verdict}, feedback={feedback}, "
-                    f"knee_angle={knee_angle:.0f}"
-                )
-                instruction = _voice.llm_assistant_response(prompt)
-                print(f"[sound] spoken cue: {instruction!r}")
-                wav = _voice.transcribe_message(instruction)
+                t0 = time.monotonic()
+                cue = _voice.coaching_cue(feedback)
+                print(f"[sound] cue: {cue!r}  (knee {knee_angle:.0f}deg)")
+                t1 = time.monotonic()
+                wav = _voice.transcribe_message(cue)
+                t2 = time.monotonic()
                 _voice.play_sound(wav)
+                t3 = time.monotonic()
+                print(
+                    f"[sound] tts={1000*(t2-t1):.0f}ms  "
+                    f"play={1000*(t3-t2):.0f}ms  "
+                    f"total={1000*(t3-t0):.0f}ms"
+                )
             except Exception as exc:
                 print(f"[sound] ERROR: {exc}")
 
@@ -196,7 +200,7 @@ def _draw_hud(
     cv2.rectangle(canvas, (0, 0), (w, 82), (0, 0, 0), -1)
     cv2.rectangle(canvas, (0, 0), (w, 82), bar, 2)
 
-    angle_str = f"{angle:5.1f}\u00b0" if angle is not None else "  --  "
+    angle_str = f"{angle:5.1f}deg" if angle is not None else "  --  "
     _put_text(canvas, f"REPS {counter.rep_count}",              (12, 30),  0.9, WHITE, 2)
     _put_text(canvas, f"STATE {state}",                         (160, 30), 0.7, bar,   2)
     _put_text(canvas, f"KNEE {angle_str}",                      (12, 62),  0.7, WHITE, 2)
@@ -237,6 +241,17 @@ def main() -> None:
     if not args.no_sound:
         try:
             _load_voice(args.broker, args.port)
+            _voice.display(0)
+            _warmup_phrases = list(STATIC_FEEDBACK_PHRASES) + [
+                f"Hip stopped {n} cm above parallel"            for n in range(1, 26)
+            ] + [
+                f"Trunk leaned {n}° forward"               for n in range(45, 81)
+            ] + [
+                f"Heels lifted ~{n} cm — drive through midfoot" for n in range(5, 21)
+            ] + [
+                f"L/R knees differ by {n}° — even the load" for n in range(15, 41)
+            ]
+            _voice.warmup_tts_cache(_warmup_phrases)
             print(f"[run] sound ON  — broker {args.broker}:{args.port}")
         except Exception as exc:
             print(f"[run] WARNING: sound disabled — {exc}")

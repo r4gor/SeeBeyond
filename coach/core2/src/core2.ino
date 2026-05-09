@@ -33,6 +33,11 @@ void onRepReceived() {
     drawReps();
 }
 
+void onScoreReceived(int n) {
+    repCount = n;
+    drawReps();
+}
+
 // ---------------------------------------------------------------------------
 // WiFi
 // ---------------------------------------------------------------------------
@@ -78,6 +83,7 @@ void setup() {
     wifiConnect();
 
     mqttSetup(wifiClient);
+    initAudioTask();
 
     drawReps();
     Serial.println("[Core2] Ready");
@@ -98,5 +104,5 @@ void loop() {
         wifiConnect();
     }
 
-    delay(10);
+    delay(1);
 }

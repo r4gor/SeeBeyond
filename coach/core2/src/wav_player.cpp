@@ -1,8 +1,45 @@
 #include "wav_player.h"
 #include "config.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 
 static const size_t WAV_HEADER_SIZE = 44;
 static const size_t MEM_THRESHOLD   = 50 * 1024;
+
+// ---------------------------------------------------------------------------
+// Background audio task — keeps MQTT loop unblocked during playback
+// ---------------------------------------------------------------------------
+
+struct AudioClip { uint8_t* data; size_t size; };
+static QueueHandle_t _audioQueue = nullptr;
+
+static void audioTask(void*) {
+    AudioClip clip;
+    for (;;) {
+        if (xQueueReceive(_audioQueue, &clip, portMAX_DELAY) == pdTRUE) {
+            Serial.printf("[Audio] playing %u bytes\n", clip.size);
+            M5.Spk.PlaySound((const unsigned char*)clip.data, clip.size);
+            free(clip.data);
+        }
+    }
+}
+
+void initAudioTask() {
+    _audioQueue = xQueueCreate(1, sizeof(AudioClip));
+    xTaskCreate(audioTask, "audio", 8192, nullptr, 2, nullptr);
+}
+
+bool schedulePCMPlay(uint8_t* data, size_t dataSize) {
+    if (!data || dataSize == 0 || !_audioQueue) { free(data); return false; }
+    AudioClip clip = {data, dataSize};
+    if (xQueueSend(_audioQueue, &clip, 0) != pdTRUE) {
+        free(data);  // queue full — stale cue, discard
+        Serial.println("[Audio] queue full, clip dropped");
+        return false;
+    }
+    return true;
+}
 
 extern void drawStatus(const char* msg);
 

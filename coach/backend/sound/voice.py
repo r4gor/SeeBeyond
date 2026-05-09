@@ -14,6 +14,8 @@ Core2 MQTT topics:
 
 import os
 import io
+import math
+import time
 import wave
 import hashlib
 import threading
@@ -31,14 +33,32 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 # Config
 # ---------------------------------------------------------------------------
 
-MISTRAL_API_KEY     = os.environ["MISTRAL_API_KEY"]
-ELEVENLABS_API_KEY  = os.environ["ELEVENLABS_API_KEY"]
-ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")
+MISTRAL_API_KEY      = os.environ.get("MISTRAL_API_KEY",      "")
+ELEVENLABS_API_KEY   = os.environ.get("ELEVENLABS_API_KEY",   "")
+ELEVENLABS_VOICE_ID  = os.environ.get("ELEVENLABS_VOICE_ID",  "EXAVITQu4vr4xnSDxMaL")
+ELEVENLABS_MODEL_ID  = os.environ.get("ELEVENLABS_MODEL_ID",  "eleven_flash_v2")
+
+OPENAI_API_KEY       = os.environ.get("OPENAI_API_KEY",       "")
+OPENAI_TTS_MODEL     = os.environ.get("OPENAI_TTS_MODEL",     "tts-1")
+OPENAI_TTS_VOICE     = os.environ.get("OPENAI_TTS_VOICE",     "alloy")
+OPENAI_CHAT_MODEL    = os.environ.get("OPENAI_CHAT_MODEL",    "gpt-4o-mini")
+
+GROQ_API_KEY         = os.environ.get("GROQ_API_KEY",         "")
+GROQ_CHAT_MODEL      = os.environ.get("GROQ_CHAT_MODEL",      "llama-3.1-8b-instant")
+
+# "elevenlabs" | "openai"
+TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "elevenlabs")
+# "mistral" | "openai" | "groq"
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "mistral")
 
 MQTT_BROKER = os.environ.get("MQTT_BROKER", "172.20.10.2")
 MQTT_PORT   = int(os.environ.get("MQTT_PORT", 1883))
 MQTT_MAX_WAV_PAYLOAD = int(os.environ.get("MQTT_MAX_WAV_PAYLOAD", 60 * 1024))
 WAV_HEADER_SIZE = 44
+# Must match MAX_PCM_BUFFER in coach/core2/src/mqtt_handler.cpp
+CORE2_MAX_PCM_BYTES = 512 * 1024
+# 1.0 = normalize to full scale (loudest clean); lower to reduce volume
+PCM_VOLUME = float(os.environ.get("PCM_VOLUME", "1.0"))
 TTS_CACHE_DIR = Path(os.environ.get("TTS_CACHE_DIR", Path(__file__).resolve().parents[1] / ".cache" / "tts"))
 
 # Topics must match core2/config.h
@@ -50,8 +70,26 @@ TOPIC_PCM_END     = "core2/play/pcm/end"
 TOPIC_TRIGGER_REP = "core2/rep"
 TOPIC_SCORE       = "core2/score"
 
-_mistral    = Mistral(api_key=MISTRAL_API_KEY)
-_elevenlabs = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+_mistral    = Mistral(api_key=MISTRAL_API_KEY) if MISTRAL_API_KEY    else None
+_elevenlabs = ElevenLabs(api_key=ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY else None
+_openai_client = None
+_groq_client   = None
+
+
+def _get_openai():
+    global _openai_client
+    if _openai_client is None:
+        from openai import OpenAI
+        _openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    return _openai_client
+
+
+def _get_groq():
+    global _groq_client
+    if _groq_client is None:
+        from groq import Groq
+        _groq_client = Groq(api_key=GROQ_API_KEY)
+    return _groq_client
 
 # ---------------------------------------------------------------------------
 # Persistent MQTT client — avoids a TCP handshake on every publish
@@ -103,62 +141,138 @@ def _get_client() -> mqtt.Client:
 
 def llm_assistant_response(input: str) -> str:
     """Translate a technical classification string into a plain coaching instruction."""
+    _prompt = (
+        "You are fitness instructor. Give 5 word-feedback to client in workout based on\n\n"
+        f"classification: {input}"
+    )
+    if LLM_PROVIDER == "openai":
+        response = _get_openai().chat.completions.create(
+            model=OPENAI_CHAT_MODEL,
+            max_tokens=128,
+            messages=[{"role": "user", "content": _prompt}],
+        )
+        return response.choices[0].message.content.strip()
+    if LLM_PROVIDER == "groq":
+        response = _get_groq().chat.completions.create(
+            model=GROQ_CHAT_MODEL,
+            max_tokens=128,
+            messages=[{"role": "user", "content": _prompt}],
+        )
+        return response.choices[0].message.content.strip()
     response = _mistral.chat.complete(
         model="ministral-3b-latest",
         max_tokens=128,
-        messages=[{
-            "role": "user",
-            "content": (
-                "You are a fitness instructor. Translate the following technical "
-                "classification into a single short coaching instruction a client "
-                "would hear during a workout. Reply with only the instruction, "
-                "no extra text.\n\n"
-                f"Classification: {input}"
-            ),
-        }],
+        messages=[{"role": "user", "content": _prompt}],
     )
     return response.choices[0].message.content.strip()
+
+
+def coaching_cue(feedback: str) -> str:
+    """Format classifier feedback into TTS-ready text without an LLM round-trip."""
+    text = feedback
+    text = text.replace("°", " degrees")
+    text = text.replace("~", "about ")
+    text = text.replace("—", ", ")
+    text = text.replace("L/R", "left and right")
+    return text
+
+
+def warmup_tts_cache(phrases: list[str]) -> None:
+    """Pre-generate TTS for all phrases concurrently in a background thread."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _one(cue: str) -> None:
+        if _read_tts_cache(cue) is not None:
+            return
+        try:
+            transcribe_message(cue)
+            print(f"[warmup] {cue!r}")
+        except Exception as exc:
+            print(f"[warmup] ERR {cue!r}: {exc}")
+
+    def _run() -> None:
+        cues = [coaching_cue(p) for p in phrases if p]
+        miss = [c for c in cues if _read_tts_cache(c) is None]
+        if not miss:
+            print(f"[warmup] all {len(cues)} phrases already cached")
+            return
+        print(f"[warmup] generating {len(miss)}/{len(cues)} phrases …")
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            list(pool.map(_one, miss))
+        print("[warmup] done")
+
+    threading.Thread(target=_run, daemon=True).start()
 
 # ---------------------------------------------------------------------------
 # Sound
 # ---------------------------------------------------------------------------
 
 def transcribe_message(text: str) -> bytes:
-    """Generate WAV audio from text using ElevenLabs. Returns raw WAV bytes."""
+    """Generate WAV audio from text. Provider selected by TTS_PROVIDER."""
+    t0 = time.perf_counter()
     cached = _read_tts_cache(text)
     if cached is not None:
+        print(f"[tts] cache hit  {len(cached)//1024}KB  {(time.perf_counter()-t0)*1000:.0f}ms")
         return cached
 
-    audio_iter = _elevenlabs.text_to_speech.convert(
-        voice_id=ELEVENLABS_VOICE_ID,
-        text=text,
-        model_id="eleven_multilingual_v2",
-        voice_settings=VoiceSettings(
-            stability=0.4,
-            similarity_boost=0.8,
-            style=0.0,
-            use_speaker_boost=True,
-        ),
-        output_format="pcm_22050",  # Core2 speaker works well at 22050 Hz 16-bit PCM
-    )
-    wav_bytes = convert_to(b"".join(audio_iter), input_sample_rate=22050)
+    t1 = time.perf_counter()
+    if TTS_PROVIDER == "openai":
+        pcm_bytes = _get_openai().audio.speech.create(
+            model=OPENAI_TTS_MODEL,
+            voice=OPENAI_TTS_VOICE,
+            input=text,
+            response_format="pcm",  # 24000 Hz 16-bit mono PCM
+        ).read()
+        t2 = time.perf_counter()
+        print(f"[tts] openai    api={1000*(t2-t1):.0f}ms")
+        wav_bytes = convert_to(pcm_bytes, input_sample_rate=24000)
+    else:
+        audio_iter = _elevenlabs.text_to_speech.convert(
+            voice_id=ELEVENLABS_VOICE_ID,
+            text=text,
+            model_id=ELEVENLABS_MODEL_ID,
+            voice_settings=VoiceSettings(
+                stability=0.4,
+                similarity_boost=0.8,
+                style=0.0,
+                use_speaker_boost=True,
+            ),
+            output_format="pcm_22050",
+        )
+        pcm_raw = b"".join(audio_iter)
+        t2 = time.perf_counter()
+        print(f"[tts] elevenlabs api={1000*(t2-t1):.0f}ms  raw={len(pcm_raw)//1024}KB")
+        wav_bytes = convert_to(pcm_raw, input_sample_rate=22050)
+
+    t3 = time.perf_counter()
+    print(f"[tts] convert+trim={1000*(t3-t2):.0f}ms  wav={len(wav_bytes)//1024}KB  total={1000*(t3-t0):.0f}ms")
     _write_tts_cache(text, wav_bytes)
     return wav_bytes
 
 
 def _tts_cache_path(text: str) -> Path:
-    cache_input = "\n".join([
-        "elevenlabs",
-        ELEVENLABS_VOICE_ID,
-        "eleven_multilingual_v2",
-        "pcm_22050",
-        "44100hz-16bit-mono-wav",
-        "stability=0.4",
-        "similarity_boost=0.8",
-        "style=0.0",
-        "use_speaker_boost=True",
-        text,
-    ])
+    if TTS_PROVIDER == "openai":
+        cache_input = "\n".join([
+            "openai",
+            OPENAI_TTS_MODEL,
+            OPENAI_TTS_VOICE,
+            "pcm-24000",
+            "44100hz-16bit-mono-wav",
+            text,
+        ])
+    else:
+        cache_input = "\n".join([
+            "elevenlabs",
+            ELEVENLABS_VOICE_ID,
+            ELEVENLABS_MODEL_ID,
+            "pcm_22050",
+            "44100hz-16bit-mono-wav",
+            "stability=0.4",
+            "similarity_boost=0.8",
+            "style=0.0",
+            "use_speaker_boost=True",
+            text,
+        ])
     key = hashlib.sha256(cache_input.encode("utf-8")).hexdigest()
     return TTS_CACHE_DIR / f"{key}.wav"
 
@@ -276,12 +390,19 @@ def _extract_pcm_44100_mono_16bit(wav_bytes: bytes) -> bytes:
 
 
 def _send_pcm_clip(pcm: bytes) -> None:
+    if len(pcm) > CORE2_MAX_PCM_BYTES:
+        pcm = pcm[:CORE2_MAX_PCM_BYTES & ~1]  # align to 16-bit boundary
+    t0 = time.perf_counter()
     client = _get_client()
+    t1 = time.perf_counter()
     max_chunk = MQTT_MAX_WAV_PAYLOAD
+    n_chunks = math.ceil(len(pcm) / max_chunk)
     client.publish(TOPIC_PCM_START, str(len(pcm)).encode(), qos=0)
     for offset in range(0, len(pcm), max_chunk):
         client.publish(TOPIC_PCM_DATA, pcm[offset:offset + max_chunk], qos=0)
     client.publish(TOPIC_PCM_END, b"", qos=0).wait_for_publish()
+    t2 = time.perf_counter()
+    print(f"[pcm] {len(pcm)//1024}KB  {n_chunks} chunks  mqtt_connect={1000*(t1-t0):.0f}ms  queue={1000*(t2-t1):.0f}ms")
 
 # ---------------------------------------------------------------------------
 # Main pipeline
@@ -370,6 +491,16 @@ def _resample_linear(samples: list[int], source_rate: int, target_rate: int) -> 
     return resampled
 
 
+def _trim_silence(raw: np.ndarray, threshold: int = 300, pad: int = 500) -> np.ndarray:
+    """Drop leading/trailing samples below threshold; keep pad samples of context on each side."""
+    above = np.where(np.abs(raw) > threshold)[0]
+    if len(above) == 0:
+        return raw
+    start = max(0, above[0] - pad)
+    end   = min(len(raw), above[-1] + pad + 1)
+    return raw[start:end]
+
+
 def _encode_16bit(samples: list[int]) -> bytes:
     out = bytearray(len(samples) * 2)
     for index, sample in enumerate(samples):
@@ -414,6 +545,10 @@ def convert_to(
                 np.arange(len(raw)),
                 raw.astype(np.float64),
             ).round().clip(-32768, 32767).astype(np.int16)
+        raw = _trim_silence(raw)
+        peak = float(np.abs(raw).max())
+        if peak > 0:
+            raw = (raw.astype(np.float64) * (PCM_VOLUME * 32767.0 / peak)).round().clip(-32768, 32767).astype(np.int16)
         converted_pcm = raw.tobytes()
     else:
         samples = _pcm_to_mono_16bit(pcm, sample_width, channels)

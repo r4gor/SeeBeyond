@@ -35,3 +35,10 @@ bool playPCMBuffer(const uint8_t* data,
 
 // Block until playback on the given channel finishes.
 void waitForPlayback(int channel = SPEAKER_CHANNEL);
+
+// Start the background audio task (call once from setup()).
+void initAudioTask();
+
+// Queue a raw PCM clip for playback. Takes ownership of `data` (will free it).
+// Returns false if the queue is full (clip is freed and discarded).
+bool schedulePCMPlay(uint8_t* data, size_t dataSize);
