@@ -6,10 +6,8 @@
 
 static PubSubClient* _client = nullptr;
 
-// Max raw WAV payload accepted over MQTT (~200 KB fits most ElevenLabs outputs)
-static const size_t MAX_WAV_PAYLOAD = 200 * 1024;
-static uint8_t      wavBuf[MAX_WAV_PAYLOAD];
-static size_t       wavBufLen = 0;
+// PubSubClient stores the full MQTT packet in a uint16_t-sized buffer.
+static const size_t MAX_WAV_PAYLOAD = 60 * 1024;
 
 // ---------------------------------------------------------------------------
 
@@ -31,27 +29,16 @@ static void onMessage(const char* topic, byte* payload, unsigned int length) {
             return;
         }
         Serial.printf("[MQTT] WAV data received: %u bytes\n", length);
-        memcpy(wavBuf, payload, length);
-        wavBufLen = length;
-        playWAVBuffer(wavBuf, wavBufLen);
+        playWAVBuffer((const uint8_t*)payload, length);
         return;
     }
 
-    // core2/rep — trigger the rep-completion sound
+    // core2/rep — trigger the rep-completion sound and update counter
     if (strcmp(topic, TOPIC_TRIGGER_REP) == 0) {
-        Serial.println("[MQTT] trigger rep");
-        playWAVFromSD(REP_SOUND_PATH);
-        return;
-    }
-
-    // core2/score — display score number
-    if (strcmp(topic, TOPIC_SCORE) == 0) {
-        char numStr[16] = {0};
-        size_t n = length < sizeof(numStr) - 1 ? length : sizeof(numStr) - 1;
-        memcpy(numStr, payload, n);
-        int score = atoi(numStr);
-        Serial.printf("[MQTT] score: %d\n", score);
-        onScoreReceived(score);
+        bool good = (length == 4 && strncmp((char*)payload, "good", 4) == 0);
+        Serial.printf("[MQTT] trigger rep good=%d\n", good);
+        playWAVFromSD(good ? REP_GOOD_SOUND_PATH : REP_SOUND_PATH);
+        onRepReceived();
         return;
     }
 }
@@ -66,7 +53,6 @@ static void reconnect() {
             _client->subscribe(TOPIC_WAV_FILE);
             _client->subscribe(TOPIC_WAV_DATA);
             _client->subscribe(TOPIC_TRIGGER_REP);
-            _client->subscribe(TOPIC_SCORE);
         } else {
             Serial.printf(" failed (rc=%d), retry in 3s\n", _client->state());
             delay(3000);

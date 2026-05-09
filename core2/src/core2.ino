@@ -10,23 +10,14 @@
 // Display
 // ---------------------------------------------------------------------------
 
-static int currentScore = 0;
-static int repCount     = 0;
+static int repCount = 0;
 
-static void drawScore(int score) {
+static void drawReps() {
     M5.Lcd.fillScreen(BLACK);
     M5.Lcd.setTextColor(WHITE, BLACK);
-
-    // Large rep counter in centre
     M5.Lcd.setTextSize(6);
     M5.Lcd.setCursor(100, 60);
     M5.Lcd.printf("%d", repCount);
-
-    // Smaller score in bottom-right
-    M5.Lcd.setTextSize(3);
-    M5.Lcd.setCursor(10, 200);
-    M5.Lcd.setTextColor(GREEN, BLACK);
-    M5.Lcd.printf("Score: %d", score);
 }
 
 static void drawStatus(const char* msg) {
@@ -37,10 +28,9 @@ static void drawStatus(const char* msg) {
     M5.Lcd.print(msg);
 }
 
-// Called from mqtt_handler when TOPIC_SCORE arrives
-void onScoreReceived(int score) {
-    currentScore = score;
-    drawScore(score);
+void onRepReceived() {
+    repCount++;
+    drawReps();
 }
 
 // ---------------------------------------------------------------------------
@@ -74,8 +64,7 @@ void setup() {
     M5.begin();
     Serial.begin(115200);
 
-    M5.Speaker.begin();
-    M5.Speaker.setVolume(SPEAKER_VOLUME);
+    M5.Spk.begin();
 
     M5.Lcd.fillScreen(BLACK);
     drawStatus("Booting...");
@@ -91,7 +80,7 @@ void setup() {
 
     mqttSetup(wifiClient);
 
-    drawScore(0);
+    drawReps();
     Serial.println("[Core2] Ready");
 }
 
@@ -99,16 +88,10 @@ void loop() {
     M5.update();
     mqttLoop();
 
-    // BtnA — play rep sound manually for testing
+    // BtnA — simulate rep for testing
     if (M5.BtnA.wasPressed()) {
-        repCount++;
-        drawScore(currentScore);
         playWAVFromSD(REP_SOUND_PATH);
-    }
-
-    // BtnB — stop current playback
-    if (M5.BtnB.wasPressed()) {
-        M5.Speaker.stop();
+        onRepReceived();
     }
 
     // BtnC — reconnect WiFi

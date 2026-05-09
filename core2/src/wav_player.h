@@ -1,6 +1,7 @@
 #pragma once
 #include <M5Core2.h>
 #include <SD.h>
+#include "config.h"
 
 // Play WAV from SD card. Automatically chooses memory vs segmented based on heap.
 bool playWAVFromSD(const char* filename,
