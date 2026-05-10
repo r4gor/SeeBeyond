@@ -106,7 +106,7 @@ def llm_assistant_response(input: str) -> str:
     """Translate a technical classification string into a plain coaching instruction."""
     response = _mistral.chat.complete(
         model="ministral-3b-latest",
-        max_tokens=128,
+        max_tokens=40,
         messages=[{
             "role": "user",
             "content": (

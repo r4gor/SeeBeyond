@@ -10,7 +10,7 @@ static PubSubClient* _client = nullptr;
 extern void drawStatus(const char* msg);
 
 static const size_t MAX_WAV_PAYLOAD = 60 * 1024;
-static const size_t MAX_PCM_BUFFER = 512 * 1024;
+static const size_t MAX_PCM_BUFFER = 2 * 1024 * 1024;  // 2 MB from PSRAM (~22 s at 44100 Hz)
 
 static uint8_t* _pcmBuffer = nullptr;
 static size_t _pcmSize = 0;
