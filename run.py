@@ -107,22 +107,47 @@ def _load_voice(broker: str, port: int) -> None:
 
 _audio_lock = threading.Lock()
 
+BATCH_SIZE = 6  # reps accumulated before one LLM+TTS voice cue fires
 
-def _speak_async(verdict: str, feedback: str, knee_angle: float) -> None:
-    """Fire-and-forget: Mistral → ElevenLabs TTS → WAV → MQTT PCM → Core2 speaker."""
+
+def _batch_speak_async(batch: list) -> None:
+    """Fire-and-forget: summarise BATCH_SIZE reps via LLM → ElevenLabs TTS → Core2 speaker."""
     def _worker() -> None:
         with _audio_lock:
             try:
-                prompt      = (
-                    f"verdict={verdict}, feedback={feedback}, "
-                    f"knee_angle={knee_angle:.0f}"
-                )
-                instruction = _voice.llm_assistant_response(prompt)
-                print(f"[sound] spoken cue: {instruction!r}")
+                n      = len(batch)
+                n_good = sum(1 for r in batch if r["verdict"] == "good")
+
+                # Trend: compare second half to first half
+                half = n // 2
+                trend = ""
+                if half > 0:
+                    first_good  = sum(1 for r in batch[:half] if r["verdict"] == "good")
+                    second_good = sum(1 for r in batch[half:] if r["verdict"] == "good")
+                    if second_good > first_good:
+                        trend = "improving trend"
+                    elif second_good < first_good:
+                        trend = "form fading"
+
+                # Unique feedback from non-good reps (preserve order, cap at 2)
+                seen, unique_errors = set(), []
+                for r in batch:
+                    if r["verdict"] != "good" and r["feedback"] not in seen:
+                        seen.add(r["feedback"])
+                        unique_errors.append(r["feedback"])
+
+                parts = [f"set of {n} reps: {n_good} good"]
+                if unique_errors:
+                    parts.append("main issue: " + "; ".join(unique_errors[:2]))
+                if trend:
+                    parts.append(trend)
+
+                instruction = _voice.llm_assistant_response("; ".join(parts))
+                print(f"[sound] batch cue ({n_good}/{n} good): {instruction!r}")
                 wav = _voice.transcribe_message(instruction)
                 _voice.play_sound(wav)
             except Exception as exc:
-                print(f"[sound] ERROR: {exc}")
+                print(f"[sound] batch ERROR: {exc}")
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -382,7 +407,8 @@ def main() -> None:
             print(f"[run] WARNING: sound disabled — {exc}")
 
     # ---------- shared HUD state (written in coach thread, read in draw loop) ----------
-    _last: dict = {"verdict": "", "feedback": "", "t": 0.0}
+    _last: dict  = {"verdict": "", "feedback": "", "t": 0.0}
+    _batch: list = []   # accumulates rep results; voice fires every BATCH_SIZE reps
 
     # ---------- coach worker thread ----------
     _rep_queue: queue.Queue = queue.Queue()
@@ -415,8 +441,12 @@ def main() -> None:
                     except Exception as exc:
                         print(f"[run] MQTT error: {exc}")
 
-                if _voice is not None:
-                    _speak_async(verdict, fb_msg, min_angle)
+                # Batch LLM+TTS: accumulate reps, speak every BATCH_SIZE
+                _batch.append({"verdict": verdict, "feedback": fb_msg, "angle": min_angle})
+                if len(_batch) >= BATCH_SIZE and _voice is not None:
+                    _batch_speak_async(list(_batch))
+                    _batch.clear()
+
             except Exception as exc:
                 print(f"[coach] ERROR: {exc}")
             finally:
