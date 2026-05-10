@@ -441,10 +441,13 @@ def main() -> None:
                     except Exception as exc:
                         print(f"[run] MQTT error: {exc}")
 
-                # Batch LLM+TTS: accumulate reps, speak every BATCH_SIZE
+                # Batch LLM+TTS: fire on every BATCH_SIZE-th rep (rep number is global)
                 _batch.append({"verdict": verdict, "feedback": fb_msg, "angle": min_angle})
-                if len(_batch) >= BATCH_SIZE and _voice is not None:
-                    _batch_speak_async(list(_batch))
+                if n % BATCH_SIZE == 0 and _voice is not None:
+                    if not _audio_lock.locked():
+                        _batch_speak_async(list(_batch))
+                    else:
+                        print(f"[sound] batch skipped (audio still playing at rep {n})")
                     _batch.clear()
 
             except Exception as exc:

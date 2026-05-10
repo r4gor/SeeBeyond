@@ -9,6 +9,24 @@ static PubSubClient* _client = nullptr;
 
 extern void drawStatus(const char* msg);
 
+// ---------------------------------------------------------------------------
+// PCM audio task — runs PlaySound off the MQTT callback so mqttLoop() keeps
+// ticking and core2/display updates arrive while audio is playing.
+// ---------------------------------------------------------------------------
+
+static TaskHandle_t _audioTaskHandle = nullptr;
+
+static void _audioTask(void* /*pvParams*/) {
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (_pcmBuffer && _pcmSize > 0) {
+            drawStatus("PCM playing");
+            playPCMBuffer(_pcmBuffer, _pcmSize);
+        }
+        resetPCMBuffer(0);
+    }
+}
+
 static const size_t MAX_WAV_PAYLOAD = 60 * 1024;
 static const size_t MAX_PCM_BUFFER = 2 * 1024 * 1024;  // 2 MB from PSRAM (~22 s at 44100 Hz)
 
@@ -73,11 +91,11 @@ static void onMessage(const char* topic, byte* payload, unsigned int length) {
 
     if (strcmp(topic, TOPIC_PCM_END) == 0) {
         Serial.printf("[PCM] end: %u/%u bytes\n", _pcmSize, _pcmCapacity);
-        if (_pcmBuffer && _pcmSize > 0) {
-            drawStatus("PCM playing");
-            playPCMBuffer(_pcmBuffer, _pcmSize);
+        if (_pcmBuffer && _pcmSize > 0 && _audioTaskHandle) {
+            xTaskNotifyGive(_audioTaskHandle);  // plays async; resetPCMBuffer called by task
+        } else {
+            resetPCMBuffer(0);
         }
-        resetPCMBuffer(0);
         return;
     }
 
@@ -155,6 +173,9 @@ void mqttSetup(WiFiClient& wifiClient) {
     _client->setServer(MQTT_BROKER, MQTT_PORT);
     _client->setCallback(onMessage);
     _client->setBufferSize(MAX_WAV_PAYLOAD + 256);  // accommodate large WAV payloads
+
+    // Start the audio task so PCM playback doesn't block mqttLoop()
+    xTaskCreate(_audioTask, "pcm_audio", 8192, nullptr, 1, &_audioTaskHandle);
 }
 
 void mqttLoop() {
