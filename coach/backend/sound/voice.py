@@ -56,6 +56,22 @@ _mistral    = Mistral(api_key=MISTRAL_API_KEY)
 _elevenlabs = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
 # ---------------------------------------------------------------------------
+# Pre-generated beep tones (44100 Hz 16-bit mono raw PCM)
+# Sent directly via PCM streaming — no SD card files required.
+# ---------------------------------------------------------------------------
+
+def _make_beep(freq: float, dur: float = 0.18, rate: int = 44100) -> bytes:
+    t   = np.linspace(0, dur, int(rate * dur), endpoint=False)
+    env = np.ones(len(t))
+    fade = max(1, int(rate * 0.008))        # 8 ms fade-in/out to remove clicks
+    env[:fade]  = np.linspace(0, 1, fade)
+    env[-fade:] = np.linspace(1, 0, fade)
+    return (env * np.sin(2 * np.pi * freq * t) * 26000).astype(np.int16).tobytes()
+
+_BEEP_GOOD = _make_beep(880)   # A5 — bright, positive
+_BEEP_BAD  = _make_beep(330)   # E4 — low, neutral
+
+# ---------------------------------------------------------------------------
 # Persistent MQTT client — avoids a TCP handshake on every publish
 # ---------------------------------------------------------------------------
 
@@ -322,8 +338,8 @@ def play_file(filename: str) -> None:
 
 
 def trigger_rep(good: bool = False) -> None:
-    """Trigger the rep-completion sound on Core2."""
-    send_request(TOPIC_TRIGGER_REP, b"good" if good else b"bad")
+    """Play the rep-completion beep on Core2 via PCM (no SD card files needed)."""
+    _send_pcm_clip(_BEEP_GOOD if good else _BEEP_BAD)
 
 
 def send_display_update(
