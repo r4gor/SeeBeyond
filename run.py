@@ -144,7 +144,8 @@ def _batch_speak_async(batch: list) -> None:
 
                 instruction = _voice.llm_assistant_response("; ".join(parts))
                 print(f"[sound] batch cue ({n_good}/{n} good): {instruction!r}")
-                _voice.stream_tts(instruction)
+                wav = _voice.transcribe_message(instruction)
+                _voice.play_sound(wav)
             except Exception as exc:
                 print(f"[sound] batch ERROR: {exc}")
 
