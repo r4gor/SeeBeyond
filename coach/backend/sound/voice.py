@@ -195,8 +195,9 @@ MAX_PCM_STREAM_BYTES = 2 * 1024 * 1024  # 2 MB reservation on Core2 PSRAM
 
 
 def _tts_pcm_cache_path(text: str) -> Path:
+    # cache stores 44100-Hz PCM (upsampled from 22050); key includes the upsample tag
     key = hashlib.sha256("\n".join([
-        "elevenlabs", ELEVENLABS_VOICE_ID, "eleven_flash_v2", "pcm_44100_raw", text,
+        "elevenlabs", ELEVENLABS_VOICE_ID, "eleven_flash_v2", "pcm_22050_up44100", text,
     ]).encode()).hexdigest()
     return TTS_CACHE_DIR / f"{key}.pcm"
 
@@ -215,11 +216,12 @@ def _write_tts_pcm_cache(text: str, pcm: bytes) -> None:
 
 
 def stream_tts(text: str) -> None:
-    """Stream 44100-Hz PCM from ElevenLabs to Core2 as each chunk arrives.
+    """Stream ElevenLabs TTS to Core2 as chunks arrive.
 
-    Cache miss: ElevenLabs generates audio; every chunk is forwarded to Core2
-    immediately rather than waiting for the full clip before sending.
-    Cache hit: raw PCM sent directly, no API call.
+    Requests pcm_22050 (free-tier supported) and upsamples each chunk 2x on the
+    fly to 44100 Hz before publishing.  A try/finally guarantees PCM_END is always
+    sent so the Core2 never gets stuck waiting for data that will never arrive.
+    Cache hit: stored 44100-Hz PCM sent directly without any API call.
     """
     cached = _read_tts_pcm_cache(text)
     if cached is not None:
@@ -240,26 +242,43 @@ def stream_tts(text: str) -> None:
             style=0.0,
             use_speaker_boost=True,
         ),
-        output_format="pcm_44100",
+        output_format="pcm_22050",  # pcm_44100 requires Pro tier; upsample here instead
     )
 
     client = _get_client()
-    # Announce fixed max capacity — Core2 plays _pcmSize bytes (what was received),
-    # not _pcmCapacity, so over-reserving is safe.
     client.publish(TOPIC_PCM_START, str(MAX_PCM_STREAM_BYTES).encode(), qos=0)
 
-    chunks: list[bytes] = []
-    for chunk in audio_iter:
-        if not chunk:
-            continue
-        for off in range(0, len(chunk), MQTT_MAX_WAV_PAYLOAD):
-            client.publish(TOPIC_PCM_DATA, chunk[off : off + MQTT_MAX_WAV_PAYLOAD], qos=0)
-        chunks.append(chunk)
+    raw_chunks: list[bytes] = []
+    leftover = b""
+    try:
+        for chunk in audio_iter:
+            if not chunk:
+                continue
+            # Align to 2-byte sample boundary across chunk edges
+            buf = leftover + chunk
+            if len(buf) % 2:
+                leftover = buf[-1:]
+                buf = buf[:-1]
+            else:
+                leftover = b""
+            if not buf:
+                continue
+            # 2x nearest-neighbour upsample: duplicate each 16-bit sample → 44100 Hz
+            up = np.repeat(np.frombuffer(buf, dtype="<i2"), 2).astype("<i2").tobytes()
+            for off in range(0, len(up), MQTT_MAX_WAV_PAYLOAD):
+                client.publish(TOPIC_PCM_DATA, up[off : off + MQTT_MAX_WAV_PAYLOAD], qos=0)
+            raw_chunks.append(buf)
+    finally:
+        # Always close the stream so Core2 is never left waiting for PCM_END
+        client.publish(TOPIC_PCM_END, b"", qos=0).wait_for_publish()
 
-    client.publish(TOPIC_PCM_END, b"", qos=0).wait_for_publish()
-
-    full_pcm = b"".join(chunks)
-    print(f"[TTS] streamed ({time.monotonic() - t0:.2f}s, {len(full_pcm)} bytes)")
+    if raw_chunks:
+        full_22050 = b"".join(raw_chunks)
+        full_44100 = np.repeat(
+            np.frombuffer(full_22050, dtype="<i2"), 2
+        ).astype("<i2").tobytes()
+        print(f"[TTS] streamed ({time.monotonic() - t0:.2f}s, {len(full_44100)} bytes)")
+        _write_tts_pcm_cache(text, full_44100)
     _write_tts_pcm_cache(text, full_pcm)
 
 # ---------------------------------------------------------------------------
