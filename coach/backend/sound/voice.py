@@ -188,6 +188,81 @@ def _write_tts_cache(text: str, wav_bytes: bytes) -> None:
     temp_path.replace(path)
 
 # ---------------------------------------------------------------------------
+# Streaming TTS cache — raw 44100-Hz PCM bytes, no WAV wrapper
+# ---------------------------------------------------------------------------
+
+MAX_PCM_STREAM_BYTES = 2 * 1024 * 1024  # 2 MB reservation on Core2 PSRAM
+
+
+def _tts_pcm_cache_path(text: str) -> Path:
+    key = hashlib.sha256("\n".join([
+        "elevenlabs", ELEVENLABS_VOICE_ID, "eleven_flash_v2", "pcm_44100_raw", text,
+    ]).encode()).hexdigest()
+    return TTS_CACHE_DIR / f"{key}.pcm"
+
+
+def _read_tts_pcm_cache(text: str) -> bytes | None:
+    p = _tts_pcm_cache_path(text)
+    return p.read_bytes() if p.exists() else None
+
+
+def _write_tts_pcm_cache(text: str, pcm: bytes) -> None:
+    TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    p = _tts_pcm_cache_path(text)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_bytes(pcm)
+    tmp.replace(p)
+
+
+def stream_tts(text: str) -> None:
+    """Stream 44100-Hz PCM from ElevenLabs to Core2 as each chunk arrives.
+
+    Cache miss: ElevenLabs generates audio; every chunk is forwarded to Core2
+    immediately rather than waiting for the full clip before sending.
+    Cache hit: raw PCM sent directly, no API call.
+    """
+    cached = _read_tts_pcm_cache(text)
+    if cached is not None:
+        print(f"[TTS] pcm cache hit ({len(cached)} bytes)")
+        _send_pcm_clip(cached)
+        return
+
+    print(f"[TTS] streaming: {text!r}")
+    t0 = time.monotonic()
+
+    audio_iter = _elevenlabs.text_to_speech.convert(
+        voice_id=ELEVENLABS_VOICE_ID,
+        text=text,
+        model_id="eleven_flash_v2",
+        voice_settings=VoiceSettings(
+            stability=0.4,
+            similarity_boost=0.8,
+            style=0.0,
+            use_speaker_boost=True,
+        ),
+        output_format="pcm_44100",
+    )
+
+    client = _get_client()
+    # Announce fixed max capacity — Core2 plays _pcmSize bytes (what was received),
+    # not _pcmCapacity, so over-reserving is safe.
+    client.publish(TOPIC_PCM_START, str(MAX_PCM_STREAM_BYTES).encode(), qos=0)
+
+    chunks: list[bytes] = []
+    for chunk in audio_iter:
+        if not chunk:
+            continue
+        for off in range(0, len(chunk), MQTT_MAX_WAV_PAYLOAD):
+            client.publish(TOPIC_PCM_DATA, chunk[off : off + MQTT_MAX_WAV_PAYLOAD], qos=0)
+        chunks.append(chunk)
+
+    client.publish(TOPIC_PCM_END, b"", qos=0).wait_for_publish()
+
+    full_pcm = b"".join(chunks)
+    print(f"[TTS] streamed ({time.monotonic() - t0:.2f}s, {len(full_pcm)} bytes)")
+    _write_tts_pcm_cache(text, full_pcm)
+
+# ---------------------------------------------------------------------------
 # MQTT / Core2 interface
 # ---------------------------------------------------------------------------
 
