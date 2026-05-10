@@ -16,17 +16,6 @@ extern void drawStatus(const char* msg);
 
 static TaskHandle_t _audioTaskHandle = nullptr;
 
-static void _audioTask(void* /*pvParams*/) {
-    for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (_pcmBuffer && _pcmSize > 0) {
-            drawStatus("PCM playing");
-            playPCMBuffer(_pcmBuffer, _pcmSize);
-        }
-        resetPCMBuffer(0);
-    }
-}
-
 static const size_t MAX_WAV_PAYLOAD = 60 * 1024;
 static const size_t MAX_PCM_BUFFER = 2 * 1024 * 1024;  // 2 MB from PSRAM (~22 s at 44100 Hz)
 
@@ -60,6 +49,17 @@ static void resetPCMBuffer(size_t capacity) {
                       _pcmCapacity, ESP.getFreePsram());
         drawStatus("PCM no memory");
         _pcmCapacity = 0;
+    }
+}
+
+static void _audioTask(void* /*pvParams*/) {
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (_pcmBuffer && _pcmSize > 0) {
+            drawStatus("PCM playing");
+            playPCMBuffer(_pcmBuffer, _pcmSize);
+        }
+        resetPCMBuffer(0);
     }
 }
 

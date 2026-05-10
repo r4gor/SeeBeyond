@@ -224,6 +224,7 @@ void setup() {
     M5.begin(true, true, true, true, mbus_mode_t::kMBusModeOutput, true);
     Serial.begin(115200);
     M5.Axp.SetSpkEnable(true);
+    M5.Spk.SetVolume(SPEAKER_VOLUME);
 
     M5.Lcd.fillScreen(BLACK);
     drawStatus("Booting...");

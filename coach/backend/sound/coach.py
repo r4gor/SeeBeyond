@@ -1,9 +1,12 @@
 from __future__ import annotations
 import os
-from voice import trigger_rep, play_sound, transcribe_message, llm_assistant_response, display
+import threading
+from voice import trigger_rep, play_sound, transcribe_message, display
 
 _MAX_FEEDBACK  = 256
 _INTERIM_VERDICT = "—"
+
+_audio_thread: threading.Thread | None = None
 
 
 def _validate(reps: int, verdict: str, feedback: str, knee_angle: int | float) -> None:
@@ -28,18 +31,24 @@ class Coach:
         os.environ["MQTT_PORT"]   = str(port)
 
     def push(self, reps: int, verdict: str, feedback: str, knee_angle: int) -> None:
+        global _audio_thread
         _validate(reps, verdict, feedback, knee_angle)
 
         trigger_rep(good=(verdict == "good"))
         display(reps)
 
-        # Interim messages skip LLM — speak the feedback text directly
-        if verdict == _INTERIM_VERDICT:
-            wav = transcribe_message(feedback)
-        else:
-            instruction = llm_assistant_response(
-                f"verdict={verdict}, feedback={feedback}, knee_angle={knee_angle}"
-            )
-            wav = transcribe_message(instruction)
+        if _audio_thread is not None and _audio_thread.is_alive():
+            return  # audio already generating for a previous rep — skip
 
-        play_sound(wav)
+        def _speak():
+            if verdict == _INTERIM_VERDICT:
+                text = feedback
+            elif verdict == "good":
+                text = f"Good rep! {feedback}"
+            else:
+                text = feedback
+            wav = transcribe_message(text)
+            play_sound(wav)
+
+        _audio_thread = threading.Thread(target=_speak, daemon=True)
+        _audio_thread.start()

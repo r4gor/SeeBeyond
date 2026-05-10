@@ -14,6 +14,7 @@ Core2 MQTT topics:
 
 import os
 import io
+import time
 import wave
 import hashlib
 import threading
@@ -104,6 +105,8 @@ def _get_client() -> mqtt.Client:
 
 def llm_assistant_response(input: str) -> str:
     """Translate a technical classification string into a plain coaching instruction."""
+    print(f"[LLM] request: {input!r}")
+    t0 = time.monotonic()
     response = _mistral.chat.complete(
         model="ministral-3b-latest",
         max_tokens=40,
@@ -118,7 +121,9 @@ def llm_assistant_response(input: str) -> str:
             ),
         }],
     )
-    return response.choices[0].message.content.strip()
+    result = response.choices[0].message.content.strip()
+    print(f"[LLM] response ({time.monotonic() - t0:.2f}s): {result!r}")
+    return result
 
 # ---------------------------------------------------------------------------
 # Sound
@@ -128,12 +133,15 @@ def transcribe_message(text: str) -> bytes:
     """Generate WAV audio from text using ElevenLabs. Returns raw WAV bytes."""
     cached = _read_tts_cache(text)
     if cached is not None:
+        print(f"[TTS] cache hit ({len(cached)} bytes): {text!r}")
         return cached
 
+    print(f"[TTS] request: {text!r}")
+    t0 = time.monotonic()
     audio_iter = _elevenlabs.text_to_speech.convert(
         voice_id=ELEVENLABS_VOICE_ID,
         text=text,
-        model_id="eleven_multilingual_v2",
+        model_id="eleven_flash_v2",
         voice_settings=VoiceSettings(
             stability=0.4,
             similarity_boost=0.8,
@@ -143,6 +151,7 @@ def transcribe_message(text: str) -> bytes:
         output_format="pcm_22050",  # Core2 speaker works well at 22050 Hz 16-bit PCM
     )
     wav_bytes = convert_to(b"".join(audio_iter), input_sample_rate=22050)
+    print(f"[TTS] done ({time.monotonic() - t0:.2f}s, {len(wav_bytes)} bytes)")
     _write_tts_cache(text, wav_bytes)
     return wav_bytes
 
@@ -151,7 +160,7 @@ def _tts_cache_path(text: str) -> Path:
     cache_input = "\n".join([
         "elevenlabs",
         ELEVENLABS_VOICE_ID,
-        "eleven_multilingual_v2",
+        "eleven_flash_v2",
         "pcm_22050",
         "44100hz-16bit-mono-wav",
         "stability=0.4",
@@ -299,10 +308,16 @@ def _extract_pcm_44100_mono_16bit(wav_bytes: bytes) -> bytes:
 def _send_pcm_clip(pcm: bytes) -> None:
     client = _get_client()
     max_chunk = MQTT_MAX_WAV_PAYLOAD
+    n_chunks = (len(pcm) + max_chunk - 1) // max_chunk
+    print(f"[MQTT] PCM start: {len(pcm)} bytes → {n_chunks} chunk(s)")
+    t0 = time.monotonic()
     client.publish(TOPIC_PCM_START, str(len(pcm)).encode(), qos=0)
-    for offset in range(0, len(pcm), max_chunk):
-        client.publish(TOPIC_PCM_DATA, pcm[offset:offset + max_chunk], qos=0)
+    for i, offset in enumerate(range(0, len(pcm), max_chunk)):
+        chunk = pcm[offset:offset + max_chunk]
+        client.publish(TOPIC_PCM_DATA, chunk, qos=0)
+        print(f"[MQTT] PCM chunk {i + 1}/{n_chunks}: {len(chunk)} bytes")
     client.publish(TOPIC_PCM_END, b"", qos=0).wait_for_publish()
+    print(f"[MQTT] PCM end sent ({time.monotonic() - t0:.2f}s)")
 
 # ---------------------------------------------------------------------------
 # Main pipeline
@@ -313,10 +328,8 @@ def process_classification(classification: str, score: int | None = None) -> Non
     Full pipeline: classification string -> coaching audio on Core2.
     Optionally updates the score display.
     """
-    instruction = llm_assistant_response(classification)
-    print(f"[voice] instruction: {instruction}")
-
-    wav = transcribe_message(instruction)
+    print(f"[voice] classification: {classification!r}")
+    wav = transcribe_message(classification)
     play_sound(wav)
 
     if score is not None:
