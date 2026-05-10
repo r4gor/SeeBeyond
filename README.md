@@ -1,4 +1,4 @@
-# SeeBeyond
+# FORMA
 
 **GDG AI Hack Polimi Hackathon**
 
