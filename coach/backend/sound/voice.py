@@ -49,6 +49,7 @@ TOPIC_PCM_DATA    = "core2/play/pcm/data"
 TOPIC_PCM_END     = "core2/play/pcm/end"
 TOPIC_TRIGGER_REP = "core2/rep"
 TOPIC_SCORE       = "core2/score"
+TOPIC_DISPLAY     = "core2/display"
 
 _mistral    = Mistral(api_key=MISTRAL_API_KEY)
 _elevenlabs = ElevenLabs(api_key=ELEVENLABS_API_KEY)
@@ -218,8 +219,28 @@ def play_file(filename: str) -> None:
 
 
 def trigger_rep(good: bool = False) -> None:
-    """Trigger the rep-completion sound and increment the rep counter on Core2."""
+    """Trigger the rep-completion sound on Core2."""
     send_request(TOPIC_TRIGGER_REP, b"good" if good else b"bad")
+
+
+def send_display_update(
+    rep_n: int, verdict: str, feedback: str, angle_deg: int, state: str
+) -> None:
+    """Push a compact JSON display update to Core2.
+
+    Core2 uses this to update all four display zones in real time.
+    JSON keys kept short to fit MQTT comfortably: r=reps, v=verdict,
+    f=feedback, a=angle, s=state.
+    """
+    import json as _json
+    payload = _json.dumps({
+        "r": rep_n,
+        "v": verdict[:14],
+        "f": feedback[:45],
+        "a": int(angle_deg),
+        "s": state[:14],
+    })
+    send_request(TOPIC_DISPLAY, payload.encode())
 
 
 def display(score: int) -> None:

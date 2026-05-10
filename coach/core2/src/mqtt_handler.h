@@ -7,3 +7,4 @@ void mqttLoop();
 bool mqttConnected();
 
 extern void onRepReceived();
+extern void onDisplayUpdate(const char* json);

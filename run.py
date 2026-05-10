@@ -7,7 +7,7 @@ Wires together:
   → feature extraction     (squat-evaluator/src/features.py)
   → form classifier        (squat-evaluator/src/classifier.py)
   → Coach:
-      · trigger_rep + display  → MQTT → Core2 beep + rep count  [sync, instant]
+      · trigger_rep + send_display_update → MQTT → Core2  [sync, instant]
       · llm_assistant_response → ElevenLabs TTS → MQTT → Core2  [async thread]
 
 Usage:
@@ -58,7 +58,8 @@ from src.classifier    import classify_and_explain
 # Constants
 # ---------------------------------------------------------------------------
 
-# COCO-17 squat-relevant joint indices
+# COCO-17 joint indices used for display / depth stats
+L_SHO, R_SHO = 5, 6
 L_HIP, R_HIP = 11, 12
 L_KNE, R_KNE = 13, 14
 L_ANK, R_ANK = 15, 16
@@ -66,8 +67,11 @@ SQUAT_JOINTS  = {L_HIP, R_HIP, L_KNE, R_KNE, L_ANK, R_ANK}
 
 CONF_THR   = 0.25
 WINDOW     = "squat-debug"
-WINDOW_W   = 480
+WINDOW_W   = 480          # camera feed width after downscale
+PANEL_W    = 150          # right-side depth-stats panel width
 WINDOW_POS = (12, 12)
+
+FEEDBACK_FLASH_S = 5.0   # seconds to keep the verdict strip on the HUD after a rep
 
 # HUD colours (BGR)
 GREEN  = (0, 220, 120)
@@ -76,6 +80,7 @@ ORANGE = (0, 110, 255)
 WHITE  = (255, 255, 255)
 BLACK  = (0,   0,   0)
 RED    = (0,  60, 220)
+CYAN   = (255, 200,  0)
 
 STATE_COLOR = {
     "STANDING":   (180, 180, 180),
@@ -83,8 +88,6 @@ STATE_COLOR = {
     "BOTTOM":     (  0, 100, 255),
     "ASCENDING":  (  0, 255, 180),
 }
-
-FEEDBACK_FLASH_S = 5.0   # seconds to keep the verdict on the HUD after a rep
 
 # ---------------------------------------------------------------------------
 # Sound / MQTT — lazy-loaded so --no-sound skips all heavy deps
@@ -96,23 +99,17 @@ _voice = None  # module reference, set by _load_voice()
 def _load_voice(broker: str, port: int) -> None:
     """Import voice.py and point it at the correct broker via env vars."""
     global _voice
-    # voice.py reads MQTT_BROKER / MQTT_PORT from the environment.
     os.environ["MQTT_BROKER"] = broker
     os.environ["MQTT_PORT"]   = str(port)
     import voice as _v
     _voice = _v
 
 
-# One audio slot: prevents overlapping TTS clips when reps come fast.
 _audio_lock = threading.Lock()
 
 
 def _speak_async(verdict: str, feedback: str, knee_angle: float) -> None:
-    """
-    Fire-and-forget: Mistral reformats feedback → ElevenLabs TTS → WAV →
-    MQTT PCM stream → Core2 speaker.  Runs in a daemon thread so the
-    camera loop is never blocked by network latency.
-    """
+    """Fire-and-forget: Mistral → ElevenLabs TTS → WAV → MQTT PCM → Core2 speaker."""
     def _worker() -> None:
         with _audio_lock:
             try:
@@ -128,6 +125,60 @@ def _speak_async(verdict: str, feedback: str, knee_angle: float) -> None:
                 print(f"[sound] ERROR: {exc}")
 
     threading.Thread(target=_worker, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Depth helpers
+# ---------------------------------------------------------------------------
+
+def _z_to_color(z_cm: float) -> tuple:
+    """BGR color gradient: orange (close, ≤150 cm) → green (200 cm) → cyan (far, ≥280 cm)."""
+    if z_cm <= 0 or np.isnan(z_cm):
+        return (80, 80, 80)  # gray for invalid
+    t = float(np.clip((z_cm - 150) / 130, 0.0, 1.0))  # 0=close, 1=far
+    b = int(255 * t)
+    g = int(140 + 80 * t)
+    r = int(255 * (1 - t))
+    return (b, g, r)
+
+
+def _depth_stats(kp3d: np.ndarray, conf: np.ndarray):
+    """Return (hip_z, knee_z, parallel_delta_cm, trunk_deg) from 3D keypoints.
+
+    parallel_delta = hip_y_cm − knee_y_cm  (+Y down, so positive = hip below knee = GOOD).
+    trunk_deg = angle of shoulder→hip vector from world-up.
+    All may be NaN when joints are occluded.
+    """
+    valid = lambda idx: conf[idx] >= CONF_THR and kp3d[idx, 2] > 0
+
+    hip_zs = [kp3d[i, 2] for i in (L_HIP, R_HIP) if valid(i)]
+    kne_zs = [kp3d[i, 2] for i in (L_KNE, R_KNE) if valid(i)]
+    hip_ys = [kp3d[i, 1] for i in (L_HIP, R_HIP) if valid(i)]
+    kne_ys = [kp3d[i, 1] for i in (L_KNE, R_KNE) if valid(i)]
+
+    hip_z = float(np.mean(hip_zs)) if hip_zs else float("nan")
+    kne_z = float(np.mean(kne_zs)) if kne_zs else float("nan")
+
+    hip_y = float(np.mean(hip_ys)) if hip_ys else float("nan")
+    kne_y = float(np.mean(kne_ys)) if kne_ys else float("nan")
+    par_delta = hip_y - kne_y if not (np.isnan(hip_y) or np.isnan(kne_y)) else float("nan")
+
+    # Trunk angle: shoulder-midpoint → hip-midpoint vector vs world-up (0, -1, 0)
+    trunk_deg = float("nan")
+    sho_pts = [(kp3d[i, 0], kp3d[i, 1], kp3d[i, 2]) for i in (L_SHO, R_SHO) if valid(i)]
+    hip_pts = [(kp3d[i, 0], kp3d[i, 1], kp3d[i, 2]) for i in (L_HIP, R_HIP) if valid(i)]
+    if sho_pts and hip_pts:
+        sho_m = np.mean(sho_pts, axis=0)
+        hip_m = np.mean(hip_pts, axis=0)
+        trunk_vec = sho_m - hip_m
+        n = np.linalg.norm(trunk_vec)
+        if n > 1e-6:
+            world_up = np.array([0.0, -1.0, 0.0])
+            trunk_deg = float(np.degrees(
+                np.arccos(np.clip(np.dot(trunk_vec / n, world_up), -1.0, 1.0))
+            ))
+
+    return hip_z, kne_z, par_delta, trunk_deg
 
 
 # ---------------------------------------------------------------------------
@@ -150,18 +201,20 @@ def _put_text(
 
 
 def _draw_skeleton(canvas, skel) -> None:
-    """Draw COCO-17 bones + joints.  Squat joints are highlighted."""
-    kp2d  = np.array([[k.x_px, k.y_px]        for k in skel.keypoints], np.float32)
-    kp3d  = np.array([[k.x_cm, k.y_cm, k.z_cm] for k in skel.keypoints], np.float32)
-    conf  = np.array([k.confidence              for k in skel.keypoints], np.float32)
+    """Draw COCO-17 bones (Z-depth colored) + joints (squat joints highlighted)."""
+    kp2d  = np.array([[k.x_px, k.y_px]         for k in skel.keypoints], np.float32)
+    kp3d  = np.array([[k.x_cm, k.y_cm, k.z_cm]  for k in skel.keypoints], np.float32)
+    conf  = np.array([k.confidence               for k in skel.keypoints], np.float32)
     depth_ok = (kp3d[:, 2] > 0) & (conf >= CONF_THR)
 
-    # Bones
+    # Bones — color each segment by the average Z of its two endpoints
     for i, j in COCO_SKELETON_EDGES:
         if conf[i] < CONF_THR or conf[j] < CONF_THR:
             continue
         is_squat  = (i in SQUAT_JOINTS) and (j in SQUAT_JOINTS)
-        color     = GREEN if is_squat else (160, 160, 160)
+        # Z-depth gradient coloring (works for all bones, more saturated on squat bones)
+        avg_z = float((kp3d[i, 2] + kp3d[j, 2]) / 2)
+        color = _z_to_color(avg_z) if depth_ok[i] and depth_ok[j] else (100, 100, 100)
         thickness = 3 if is_squat else 1
         cv2.line(canvas,
                  (int(kp2d[i, 0]), int(kp2d[i, 1])),
@@ -173,9 +226,20 @@ def _draw_skeleton(canvas, skel) -> None:
         if conf[k] < CONF_THR:
             continue
         center = (int(kp2d[k, 0]), int(kp2d[k, 1]))
+        is_squat = k in SQUAT_JOINTS
         color  = YELLOW if depth_ok[k] else ORANGE
-        radius = 6 if k in SQUAT_JOINTS else 3
+        radius = 6 if is_squat else 3
         cv2.circle(canvas, center, radius, color, -1, cv2.LINE_AA)
+
+        # Z-depth label on squat joints that have valid depth
+        if is_squat and depth_ok[k]:
+            _put_text(
+                canvas,
+                f"{kp3d[k, 2]:.0f}",
+                (int(kp2d[k, 0]) + 8, int(kp2d[k, 1]) - 6),
+                scale=0.55,  # larger so it survives 0.75× downscale to 480px
+                color=color,
+            )
 
 
 def _draw_hud(
@@ -196,19 +260,95 @@ def _draw_hud(
     cv2.rectangle(canvas, (0, 0), (w, 82), (0, 0, 0), -1)
     cv2.rectangle(canvas, (0, 0), (w, 82), bar, 2)
 
-    angle_str = f"{angle:5.1f}\u00b0" if angle is not None else "  --  "
-    _put_text(canvas, f"REPS {counter.rep_count}",              (12, 30),  0.9, WHITE, 2)
-    _put_text(canvas, f"STATE {state}",                         (160, 30), 0.7, bar,   2)
-    _put_text(canvas, f"KNEE {angle_str}",                      (12, 62),  0.7, WHITE, 2)
-    _put_text(canvas, f"FPS {fps:4.1f}",                        (230, 62), 0.55, (160, 160, 160))
-    _put_text(canvas, f"DET {skel.detection_confidence:.2f}",   (340, 62), 0.55, (160, 160, 160))
+    angle_str = f"{angle:5.1f}°" if angle is not None else "  --  "
+    _put_text(canvas, f"REPS {counter.rep_count}",             (12, 30),  0.9, WHITE, 2)
+    _put_text(canvas, f"STATE {state}",                        (160, 30), 0.7, bar,   2)
+    _put_text(canvas, f"KNEE {angle_str}",                     (12, 62),  0.7, WHITE, 2)
+    _put_text(canvas, f"FPS {fps:4.1f}",                       (230, 62), 0.55, (160, 160, 160))
+    _put_text(canvas, f"DET {skel.detection_confidence:.2f}",  (340, 62), 0.55, (160, 160, 160))
 
     # Bottom feedback strip (flashes for FEEDBACK_FLASH_S after each rep)
     if show_feedback and verdict:
-        strip_color = (0, 180, 0) if verdict == "good" else (20, 20, 180)
-        cv2.rectangle(canvas, (0, h - 36), (w, h), strip_color, -1)
+        strip_color = (0, 130, 0) if verdict == "good" else (20, 20, 160)
+        cv2.rectangle(canvas, (0, h - 44), (w, h), strip_color, -1)
+        cv2.rectangle(canvas, (0, h - 44), (w, h), bar, 1)
         label = f"{verdict.upper()}: {feedback}"
-        _put_text(canvas, label, (10, h - 10), 0.65, WHITE, 2)
+        _put_text(canvas, label, (10, h - 12), 0.65, WHITE, 2)
+
+
+def _draw_depth_panel(panel: np.ndarray, angle, hip_z, kne_z, par_delta, trunk_deg) -> None:
+    """Draw the right-side depth-stats panel in place.
+
+    Layout is adaptive: metrics fill the top portion, gauge takes remaining height.
+    """
+    ph, pw = panel.shape[:2]
+    panel[:] = (15, 15, 25)  # very dark blue-black
+
+    DIM  = (140, 140, 140)
+    SEP  = (55, 55, 75)
+
+    def _sep(y):
+        cv2.line(panel, (4, y), (pw - 4, y), SEP, 1)
+
+    # --- Header ---
+    _put_text(panel, "DEPTH", (6, 16), 0.5, CYAN, 1)
+    _sep(22)
+
+    # --- Z distances (one line each: label + value combined) ---
+    hip_z_str = f"HIP  {hip_z:.0f}cm" if not np.isnan(hip_z) else "HIP  ---"
+    kne_z_str = f"KNE  {kne_z:.0f}cm" if not np.isnan(kne_z) else "KNE  ---"
+    _put_text(panel, hip_z_str, (6, 38), 0.44, WHITE)
+    _put_text(panel, kne_z_str, (6, 54), 0.44, WHITE)
+    _sep(60)
+
+    # --- Parallel delta (uses real 3D depth: hip_y - knee_y in cm) ---
+    if not np.isnan(par_delta):
+        sign      = "+" if par_delta >= 0 else ""
+        par_color = (0, 200, 80) if par_delta >= 0 else (60, 60, 220)  # green/red
+        par_str   = f"PAR {sign}{par_delta:.1f}cm"
+        _put_text(panel, par_str, (6, 76), 0.44, par_color)
+    else:
+        _put_text(panel, "PAR ---", (6, 76), 0.44, DIM)
+    _sep(82)
+
+    # --- Trunk angle ---
+    if not np.isnan(trunk_deg):
+        trunk_color = (0, 220, 255) if trunk_deg < 30 else (0, 140, 255)
+        _put_text(panel, f"TRK {trunk_deg:.0f}\xb0", (6, 98), 0.44, trunk_color)
+    else:
+        _put_text(panel, "TRK ---", (6, 98), 0.44, DIM)
+    _sep(104)
+
+    # --- Depth gauge fills the remaining vertical space ---
+    _put_text(panel, "GAUGE", (6, 116), 0.4, DIM)
+    gauge_top = 120
+    gauge_bot = ph - 6
+    gauge_h   = max(gauge_bot - gauge_top, 4)
+    gx        = pw // 2 - 10
+    gw        = 20
+
+    cv2.rectangle(panel, (gx, gauge_top), (gx + gw, gauge_bot), (70, 70, 90), 1)
+
+    if angle is not None and not np.isnan(angle):
+        # 160° (standing) → 0 %, 90° (parallel) → 100 %
+        progress  = float(np.clip((160.0 - angle) / 70.0, 0.0, 1.0))
+        fill_px   = int(gauge_h * progress)
+        if fill_px > 0:
+            # BGR gradient: red (not there yet) → yellow (halfway) → green (parallel)
+            t  = progress
+            fg = (0, int(255 * min(2 * t, 1.0)), int(255 * (1 - t)))
+            cv2.rectangle(panel,
+                          (gx + 1, gauge_bot - fill_px),
+                          (gx + gw - 1, gauge_bot - 1),
+                          fg, -1)
+
+        # Parallel threshold marker: dashed line at the top of gauge range
+        par_y = gauge_top + 1
+        cv2.line(panel, (gx - 4, par_y), (gx + gw + 4, par_y), (0, 180, 255), 2)
+
+        # "PAR" badge when hip is genuinely below knee in 3D (depth-driven check)
+        if not np.isnan(par_delta) and par_delta > 0:
+            _put_text(panel, "PAR", (gx - 2, gauge_top - 3), 0.35, (0, 220, 100))
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +400,7 @@ def main() -> None:
 
                 print(
                     f"\n[REP {n:>3}]  verdict={verdict:<14s}  "
-                    f"angle={min_angle:5.1f}\u00b0  \u2192  {fb_msg}"
+                    f"angle={min_angle:5.1f}°  →  {fb_msg}"
                 )
 
                 _last["verdict"]  = verdict
@@ -270,7 +410,8 @@ def main() -> None:
                 if _voice is not None:
                     try:
                         _voice.trigger_rep(good=(verdict == "good"))
-                        _voice.display(n)
+                        # rep is complete — person is back to STANDING
+                        _voice.send_display_update(n, verdict, fb_msg, int(min_angle), "STANDING")
                     except Exception as exc:
                         print(f"[run] MQTT error: {exc}")
 
@@ -288,11 +429,12 @@ def main() -> None:
         _rep_queue.put(rep)
 
     # ---------- set up ----------
-    counter = RepCounter(on_rep_complete=_on_rep)
+    counter    = RepCounter(on_rep_complete=_on_rep)
+    prev_state = "STANDING"
 
     if not args.no_overlay:
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(WINDOW, WINDOW_W, int(WINDOW_W * 9 / 16))
+        cv2.resizeWindow(WINDOW, WINDOW_W + PANEL_W, int(WINDOW_W * 9 / 16))
         cv2.moveWindow(WINDOW, *WINDOW_POS)
 
     frame_count = 0
@@ -306,6 +448,22 @@ def main() -> None:
         for frame, skel in stream:
             counter.update(skel)
 
+            # Push state-transition updates to Core2 in real time
+            curr_state = counter.current_state
+            if curr_state != prev_state and _voice is not None:
+                angle = counter.latest_angle or 0
+                try:
+                    _voice.send_display_update(
+                        counter.rep_count,
+                        _last.get("verdict", "---"),
+                        _last.get("feedback", "..."),
+                        int(angle),
+                        curr_state,
+                    )
+                except Exception as exc:
+                    print(f"[run] MQTT state update error: {exc}")
+                prev_state = curr_state
+
             # rolling FPS
             frame_count += 1
             now = time.monotonic()
@@ -317,7 +475,13 @@ def main() -> None:
             if args.no_overlay:
                 continue
 
-            # Draw
+            # Build 3D arrays for drawing
+            kp3d = np.array(
+                [[k.x_cm, k.y_cm, k.z_cm] for k in skel.keypoints], np.float32
+            )
+            conf = np.array([k.confidence for k in skel.keypoints], np.float32)
+
+            # Camera canvas with skeleton
             canvas = frame.copy()
             _draw_skeleton(canvas, skel)
             show_fb = (now - _last["t"]) < FEEDBACK_FLASH_S
@@ -326,11 +490,19 @@ def main() -> None:
                 _last["verdict"], _last["feedback"], show_fb,
             )
 
-            # Downscale to corner window
+            # Downscale camera feed
             h, w    = canvas.shape[:2]
-            display = cv2.resize(canvas, (WINDOW_W, int(h * WINDOW_W / w)),
-                                 interpolation=cv2.INTER_AREA)
-            cv2.imshow(WINDOW, display)
+            cam_disp = cv2.resize(canvas, (WINDOW_W, int(h * WINDOW_W / w)),
+                                  interpolation=cv2.INTER_AREA)
+
+            # Depth-stats panel
+            hip_z, kne_z, par_delta, trunk_deg = _depth_stats(kp3d, conf)
+            panel = np.zeros((cam_disp.shape[0], PANEL_W, 3), dtype=np.uint8)
+            _draw_depth_panel(panel, counter.latest_angle, hip_z, kne_z, par_delta, trunk_deg)
+
+            # Combine camera + panel side by side
+            combined = np.hstack([cam_disp, panel])
+            cv2.imshow(WINDOW, combined)
 
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
@@ -340,6 +512,7 @@ def main() -> None:
 
     if not args.no_overlay:
         cv2.destroyAllWindows()
+    _rep_queue.put(None)
     print("\n[run] bye")
 
 

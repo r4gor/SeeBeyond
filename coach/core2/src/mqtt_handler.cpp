@@ -3,6 +3,7 @@
 #include "config.h"
 #include <WiFi.h>
 #include <SD.h>
+#include <ArduinoJson.h>
 
 static PubSubClient* _client = nullptr;
 
@@ -103,13 +104,21 @@ static void onMessage(const char* topic, byte* payload, unsigned int length) {
         return;
     }
 
-    // core2/rep — trigger the rep-completion sound and update counter
+    // core2/rep — trigger the rep-completion sound only (display driven by core2/display)
     if (strcmp(topic, TOPIC_TRIGGER_REP) == 0) {
         bool good = (length == 4 && strncmp((char*)payload, "good", 4) == 0);
         Serial.printf("[MQTT] trigger rep good=%d\n", good);
-        drawStatus(good ? "MQTT good rep" : "MQTT bad rep");
         playWAVFromSD(good ? REP_GOOD_SOUND_PATH : REP_SOUND_PATH);
         onRepReceived();
+        return;
+    }
+
+    // core2/display — full display update: rep count, verdict, feedback, angle, state
+    if (strcmp(topic, TOPIC_DISPLAY) == 0) {
+        char json[300] = {0};
+        size_t n = length < sizeof(json) - 1 ? length : sizeof(json) - 1;
+        memcpy(json, payload, n);
+        onDisplayUpdate(json);
         return;
     }
 }
@@ -128,6 +137,7 @@ static void reconnect() {
             _client->subscribe(TOPIC_PCM_DATA);
             _client->subscribe(TOPIC_PCM_END);
             _client->subscribe(TOPIC_TRIGGER_REP);
+            _client->subscribe(TOPIC_DISPLAY);
         } else {
             Serial.printf(" failed (rc=%d), retry in 3s\n", _client->state());
             drawStatus("MQTT FAILED");
