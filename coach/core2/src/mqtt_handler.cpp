@@ -36,9 +36,10 @@ static void resetPCMBuffer(size_t capacity) {
         return;
     }
 
-    _pcmBuffer = (uint8_t*)malloc(_pcmCapacity);
+    _pcmBuffer = (uint8_t*)ps_malloc(_pcmCapacity);
     if (!_pcmBuffer) {
-        Serial.printf("[PCM] malloc failed for %u bytes\n", _pcmCapacity);
+        Serial.printf("[PCM] ps_malloc failed for %u bytes (free PSRAM: %u)\n",
+                      _pcmCapacity, ESP.getFreePsram());
         drawStatus("PCM no memory");
         _pcmCapacity = 0;
     }
